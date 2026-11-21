@@ -1,0 +1,9 @@
+{
+  "icon": "industrialforegoingsouls:soul_laser_base",
+  "items": [
+    "industrialforegoingsouls:soul_laser_base",
+    "industrialforegoingsouls:soul_network_pipe",
+    "industrialforegoingsouls:soul_surge"
+  ],
+  "title": "itemGroup.industrialforegoingsouls"
+}

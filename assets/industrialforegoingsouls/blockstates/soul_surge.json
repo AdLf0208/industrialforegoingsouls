@@ -1,0 +1,27 @@
+{
+  "variants": {
+    "facing=down": {
+      "model": "industrialforegoingsouls:block/soul_surge",
+      "x": 90
+    },
+    "facing=east": {
+      "model": "industrialforegoingsouls:block/soul_surge",
+      "y": 90
+    },
+    "facing=north": {
+      "model": "industrialforegoingsouls:block/soul_surge"
+    },
+    "facing=south": {
+      "model": "industrialforegoingsouls:block/soul_surge",
+      "y": -180
+    },
+    "facing=up": {
+      "model": "industrialforegoingsouls:block/soul_surge",
+      "x": -90
+    },
+    "facing=west": {
+      "model": "industrialforegoingsouls:block/soul_surge",
+      "y": -90
+    }
+  }
+}

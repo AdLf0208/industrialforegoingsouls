@@ -1,0 +1,24 @@
+id = "industrialforegoingsouls"
+name = "Industrial Foregoing: Souls"
+version = "0.2.0"
+description = """A port of Industrial Foregoing: Souls for Horizon: the three blocks that are one soul
+economy. The Soul Laser Base seats an `industrialforegoing:blue_laser_lens` in its catalyst slot and,
+with a warden inside the box above it, hurts it for 4 every 20 ticks and stores 2 souls of the damage
+in a 1,350-soul tank. The Soul Pipe walks a network of up to 4 souls a block and pulls 4 a tick out of
+any adjacent soul handler into it. The Soul Surge spends one soul for 300 ticks and random-ticks the
+block it is mounted on four times at a 3% chance a tick, and stops while it is powered. The rest of
+the mod (the Sculk Soul Tank screen addon, the parent's laser-drill recipe type, the entity and
+block-entity acceleration branches, the comparator output) is not ported; notes.md says why."""
+authors = ["Buuz135", "AdLf0208"]
+# A native mod: Rust in src/, compiled by the launcher against the game build [native] pins, beside
+# the content this one also carries (assets/industrialforegoingsouls, data/industrialforegoingsouls).
+api = "0.2"
+side = "both"
+# The one shared value every manifest carries ("May add blocks, items, mob effects and entity types"):
+# this mod adds three blocks and three block entity types.
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "0a875da91dbb0fdcb7ba8c42c11341aa229af51a"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

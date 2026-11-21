@@ -1,0 +1,21 @@
+{
+  "category": "misc",
+  "key": {
+    "A": "#c:plastics",
+    "B": "minecraft:sculk_shrieker",
+    "C": "minecraft:iron_bars",
+    "D": "#industrialforegoing:machine_frame/advanced",
+    "G": "#c:gears/diamond",
+    "S": "minecraft:sculk_catalyst"
+  },
+  "pattern": [
+    "ABA",
+    "CDC",
+    "GSG"
+  ],
+  "result": {
+    "count": 1,
+    "id": "industrialforegoingsouls:soul_laser_base"
+  },
+  "type": "minecraft:crafting_shaped"
+}

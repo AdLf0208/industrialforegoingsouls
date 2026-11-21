@@ -1,0 +1,18 @@
+{
+  "category": "misc",
+  "key": {
+    "C": "#c:plastics",
+    "D": "minecraft:echo_shard",
+    "S": "#c:stones"
+  },
+  "pattern": [
+    "SSS",
+    "CDC",
+    "SSS"
+  ],
+  "result": {
+    "count": 8,
+    "id": "industrialforegoingsouls:soul_network_pipe"
+  },
+  "type": "minecraft:crafting_shaped"
+}

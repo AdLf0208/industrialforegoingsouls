@@ -1,0 +1,19 @@
+{
+  "category": "misc",
+  "key": {
+    "A": "#c:stones",
+    "B": "#c:plastics",
+    "C": "minecraft:echo_shard",
+    "P": "minecraft:piston"
+  },
+  "pattern": [
+    "ABA",
+    "CBC",
+    "CPC"
+  ],
+  "result": {
+    "count": 1,
+    "id": "industrialforegoingsouls:soul_surge"
+  },
+  "type": "minecraft:crafting_shaped"
+}
