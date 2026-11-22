@@ -64,6 +64,22 @@ const COMMAND: &str = "industrialforegoingsouls";
 const KEY_SOULS: &str = "souls";
 const KEY_PROGRESS: &str = "progress";
 const KEY_LENS: &str = "lens";
+/// The bar's own maximum, saved the way `ProgressBarComponent` saves `maxProgress`, so an
+/// efficiency augment's rescale survives a reload.
+const KEY_BAR: &str = "bar";
+/// Titanium's augment component (`AugmentWrapper.ATTACHMENT`): the data component an addon item
+/// carries, registered by the parent package.
+const AUGMENT_COMPONENT: &str = "titanium:augments";
+/// The two values that component carries (`AugmentTypes`). The machine refuses `Speed` outright
+/// (`canAcceptAugment`) and reads `Efficiency`.
+const SPEED: &str = "Speed";
+const EFFICIENCY: &str = "Efficiency";
+/// Titanium's augment inventory: two slots, kept by position.
+const AUGMENT_SLOTS: usize = 2;
+const KEY_AUGMENTS: &str = "augments";
+/// The item the seated augment came from, so an empty hand can take it back: this port ships no
+/// GUI, so the click is the slot's only exit as well as its only entrance.
+const KEY_AUGMENT_ITEM: &str = "augment_item";
 /// The surge's saved key: the accelerated ticks it still owns.
 const KEY_WAIT: &str = "wait";
 /// The surge's six-way state property (Titanium's `RotationType.SIX_WAY`).
@@ -206,10 +222,15 @@ struct Laser;
 
 #[mod_api::horizon_part]
 impl BlockPart for Laser {
-    /// Right-clicking the machine with the blue lens seats it, taking one out of the hand. Upstream's
-    /// slot is Titanium's, opened by a GUI this port does not ship; the click is the same seat
-    /// without a screen. Anything else passes through, as `SidedInventoryComponent` refuses an item
-    /// that is not the lens.
+    /// Right-clicking the machine with the blue lens seats it, taking one out of the hand; a stack
+    /// carrying Titanium's `titanium:augments` component seats an augment the same way. Upstream's
+    /// slots are Titanium's, opened by a GUI this port does not ship; the click is the same seat
+    /// without a screen.
+    ///
+    /// `canAcceptAugment` refuses a **speed** augment on this machine (it has nothing to speed up:
+    /// the bar is the harvest's only clock) and refuses a second augment of a type already seated;
+    /// both answers leave the stack in the hand, exactly as the GUI's slot would. A stack with no
+    /// augment component and no lens passes through.
     fn use_item_on(
         &self,
         host: &mut dyn ServerHost,
@@ -217,8 +238,7 @@ impl BlockPart for Laser {
     ) -> Option<InteractionResult> {
         let click = event.click;
         let stack = click.stack?;
-        let lens = *LENS_ITEM.get()?;
-        if stack.item() != lens || stack.count() == 0 {
+        if stack.count() == 0 {
             return None;
         }
         let dimension = click.dimension.key().id();
@@ -227,17 +247,46 @@ impl BlockPart for Laser {
         if entity.kind(&*host) != Some(*BASE_KIND.get()?) {
             return None;
         }
-        let seated = lens.id(&*host);
+        if stack.item() == *LENS_ITEM.get()? {
+            let seated = LENS_ITEM.get()?.id(&*host);
+            let mut patch = Compound::new();
+            patch.insert(KEY_LENS.into(), Tag::String(seated.as_str().into()));
+            entity.merge_data(host, patch).ok()?;
+            shrink_hand(host, click.player, click.hand, stack)?;
+            return Some(InteractionResult::Consume);
+        }
+        let component = augment_component(&*host, stack)?;
+        if has_speed(&component) || efficiency_of(&component).is_none() {
+            return None;
+        }
+        let saved = entity.data(&*host)?;
+        let mut slots = augment_slots(&saved);
+        if slots
+            .iter()
+            .flatten()
+            .any(|slot| efficiency_of(slot).is_some())
+        {
+            return None;
+        }
+        let index = slots.iter().position(Option::is_none)?;
+        slots[index] = Some(component);
         let mut patch = Compound::new();
-        patch.insert(KEY_LENS.into(), Tag::String(seated.as_str().into()));
+        write_augment_slots(&mut patch, &slots);
+        let item = stack.item().id(&*host);
+        patch.insert(KEY_AUGMENT_ITEM.into(), Tag::String(item.as_str().into()));
         entity.merge_data(host, patch).ok()?;
         shrink_hand(host, click.player, click.hand, stack)?;
         Some(InteractionResult::Consume)
     }
 
     /// An empty hand takes the lens back out — the only way a survival player can change colours,
-    /// since the slot has no screen here. The hand is empty (the hook runs for one), so the lens
-    /// goes into the selected hotbar slot.
+    /// since the slot has no screen here — and, when no lens is seated, the augment. The hand is
+    /// empty (the hook runs for one), so what comes back goes into the selected hotbar slot.
+    ///
+    /// The engine also reaches this hook on a right-click whose item use passed, with the stack
+    /// **still in the hand** (measured 2026-11-22: a refused speed addon's click took the seated
+    /// efficiency addon back instead of doing nothing), so the hand is read first and a held stack
+    /// means this is not the empty-hand path.
     fn use_without_item(
         &self,
         host: &mut dyn ServerHost,
@@ -250,20 +299,38 @@ impl BlockPart for Laser {
         if entity.kind(&*host) != Some(*BASE_KIND.get()?) {
             return None;
         }
-        let saved = entity.data(&*host)?;
-        let seated = read_lens(&saved)?;
         let player = host.player(click.player)?;
-        let slot = player.selected_slot(&*host)?;
-        let item = host.item_key(&Identifier::parse(&seated).ok()?)?;
-        let stack = ItemStack::new(item, 1)?;
+        let slot = match click.hand {
+            Hand::Main => u32::try_from(player.selected_slot(&*host)?).ok()?,
+            Hand::Off => 40,
+        };
         if player
-            .set_inventory_slot(host, slot as u32, Some(stack))
-            .is_err()
+            .inventory_slots(&*host)
+            .is_some_and(|slots| slots.iter().any(|(held, _)| *held == slot))
         {
             return None;
         }
+        let saved = entity.data(&*host)?;
+        if let Some(seated) = read_lens(&saved) {
+            let item = host.item_key(&Identifier::parse(&seated).ok()?)?;
+            let stack = ItemStack::new(item, 1)?;
+            if player.set_inventory_slot(host, slot, Some(stack)).is_err() {
+                return None;
+            }
+            let mut rest = saved;
+            rest.remove(&KEY_LENS.into());
+            entity.replace_data(host, rest).ok()?;
+            return Some(InteractionResult::Consume);
+        }
+        let seated = read_augment_item(&saved)?;
+        let item = host.item_key(&Identifier::parse(&seated).ok()?)?;
+        let stack = ItemStack::new(item, 1)?;
+        if player.set_inventory_slot(host, slot, Some(stack)).is_err() {
+            return None;
+        }
         let mut rest = saved;
-        rest.remove(&KEY_LENS.into());
+        rest.remove(&KEY_AUGMENTS.into());
+        rest.remove(&KEY_AUGMENT_ITEM.into());
         entity.replace_data(host, rest).ok()?;
         Some(InteractionResult::Consume)
     }
@@ -277,17 +344,21 @@ impl BlockEntityPart for Laser {
     }
 
     /// One server tick: walk the bar, and on its last tick wound the warden this machine covers and
-    /// store the souls of the wound.
+    /// store the souls of the wound. The bar's length is the seated efficiency augment's rescale.
     fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
         let Some(level) = host.level(host.dimension()) else {
             return;
         };
         let saved = event.entity.nbt.clone();
         let lens = read_lens(&saved).is_some_and(|item| lens_fits(&item));
-        let mut base = LaserBase::from_saved(read_int(&saved, KEY_SOULS), read_progress(&saved));
+        let mut base = LaserBase::from_saved(
+            read_int(&saved, KEY_SOULS),
+            read_progress(&saved),
+            read_bar(&saved),
+        );
         let warden = warden_near(host, level, event.pos);
         let health = warden.and_then(|entity| living_health(&*host, entity));
-        if base.tick(lens, health)
+        if base.tick(lens, health, seated_efficiency(&saved))
             && let Some(entity) = warden
         {
             let _ = entity.hurt(host, GENERIC, runtime::DAMAGE_PER_OPERATION, None, None);
@@ -306,6 +377,13 @@ impl BlockEntityPart for Laser {
                 &mut event.entity.nbt,
                 KEY_PROGRESS,
                 i32::try_from(base.progress).unwrap_or(0),
+            );
+        }
+        if read_bar(&saved) != Some(i32::try_from(base.bar).unwrap_or(i32::MAX)) {
+            write_int(
+                &mut event.entity.nbt,
+                KEY_BAR,
+                i32::try_from(base.bar).unwrap_or(0),
             );
         }
     }
@@ -608,6 +686,78 @@ fn warden_near(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3]) -> Opt
 }
 
 // ---------------------------------------------------------------------------
+// The augment slots
+// ---------------------------------------------------------------------------
+
+/// The `titanium:augments` component a clicked stack carries: its own override when it has one, else
+/// the item's declared default — `AugmentWrapper`'s `stack.getOrDefault(ATTACHMENT, …)` reads the
+/// effective component, which is why a `/give` with a hand-written value wins over the item file.
+fn augment_component(host: &dyn Host, stack: &ItemStack) -> Option<Compound> {
+    if let Some(components) = stack.components()
+        && let Some(Tag::Compound(component)) = components.as_nbt().get(&AUGMENT_COMPONENT.into())
+    {
+        return Some(component.clone());
+    }
+    match host.item_default_component(stack.item(), AUGMENT_COMPONENT) {
+        Some(Tag::Compound(component)) => Some(component),
+        _ => None,
+    }
+}
+
+/// One float an augment component stores: a data pack's JSON number arrives as a `Double`, a
+/// `/give`'s SNBT as a `Float` (its bits), a hand-written one as an `Int`.
+fn augment_number(component: &Compound, key: &str) -> Option<f32> {
+    match component.get(&key.into())? {
+        Tag::Float(bits) => Some(f32::from_bits(*bits)),
+        Tag::Double(bits) => Some(f64::from_bits(*bits) as f32),
+        Tag::Int(value) => Some(*value as f32),
+        _ => None,
+    }
+}
+
+/// The efficiency a component carries, if any: the value the bar is rescaled by.
+fn efficiency_of(component: &Compound) -> Option<f32> {
+    augment_number(component, EFFICIENCY)
+}
+
+/// Whether a component carries speed, which this machine refuses (`canAcceptAugment`: the bar is
+/// the harvest's only clock, so there is nothing for speed to shorten).
+fn has_speed(component: &Compound) -> bool {
+    augment_number(component, SPEED).is_some()
+}
+
+/// The two slots as the machine saved them, by position: an empty slot is an empty compound, so a
+/// second augment never slides into the first one's place.
+fn augment_slots(nbt: &Compound) -> [Option<Compound>; AUGMENT_SLOTS] {
+    let mut slots = [const { None }; AUGMENT_SLOTS];
+    let Some(Tag::List(entries)) = nbt.get(&KEY_AUGMENTS.into()) else {
+        return slots;
+    };
+    for (slot, entry) in slots.iter_mut().zip(entries) {
+        if let Tag::Compound(component) = entry
+            && !component.is_empty()
+        {
+            *slot = Some(component.clone());
+        }
+    }
+    slots
+}
+
+/// Write both slots back, keeping the positions.
+fn write_augment_slots(nbt: &mut Compound, slots: &[Option<Compound>; AUGMENT_SLOTS]) {
+    let entries = slots
+        .iter()
+        .map(|slot| Tag::Compound(slot.clone().unwrap_or_default()))
+        .collect();
+    nbt.insert(KEY_AUGMENTS.into(), Tag::List(entries));
+}
+
+/// The efficiency augment in force, `None` when no slot holds one (the plain 20-tick bar).
+fn seated_efficiency(nbt: &Compound) -> Option<f32> {
+    augment_slots(nbt).iter().flatten().find_map(efficiency_of)
+}
+
+// ---------------------------------------------------------------------------
 // The `/industrialforegoingsouls` commands
 // ---------------------------------------------------------------------------
 
@@ -662,8 +812,13 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
     };
     match kind {
         Some(kind) if Some(kind) == BASE_KIND.get().copied() => {
-            let base = LaserBase::from_saved(read_int(&data, KEY_SOULS), read_progress(&data));
+            let base = LaserBase::from_saved(
+                read_int(&data, KEY_SOULS),
+                read_progress(&data),
+                read_bar(&data),
+            );
             let lens = read_lens(&data).unwrap_or_else(|| "none".to_owned());
+            let efficiency = seated_efficiency(&data).unwrap_or(1.0);
             let warden =
                 warden_near(host, level, pos).and_then(|entity| living_health(&*host, entity));
             let warden = match warden {
@@ -671,8 +826,8 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
                 None => "none".to_owned(),
             };
             format!(
-                "Soul Laser Base at {pos:?}: souls {}/{SOUL_STORAGE}, progress {}/{MAX_PROGRESS}, lens {lens}, warden {warden}, t={time}",
-                base.souls, base.progress
+                "Soul Laser Base at {pos:?}: souls {}/{SOUL_STORAGE}, progress {}/{}, lens {lens}, augments efficiency {efficiency:.2}, warden {warden}, t={time}",
+                base.souls, base.progress, base.bar
             )
         }
         Some(kind) if Some(kind) == PIPE_KIND.get().copied() => {
@@ -859,9 +1014,25 @@ fn read_progress(nbt: &Compound) -> Option<i32> {
     }
 }
 
+/// The bar's saved maximum, if it has one.
+fn read_bar(nbt: &Compound) -> Option<i32> {
+    match nbt.get(&KEY_BAR.into()) {
+        Some(Tag::Int(value)) => Some(*value),
+        _ => None,
+    }
+}
+
 /// The item id in the catalyst slot, if one is seated.
 fn read_lens(nbt: &Compound) -> Option<String> {
     match nbt.get(&KEY_LENS.into())? {
+        Tag::String(item) if !item.to_string_lossy().is_empty() => Some(item.to_string_lossy()),
+        _ => None,
+    }
+}
+
+/// The item id the seated augment came from, for the empty hand's take-back.
+fn read_augment_item(nbt: &Compound) -> Option<String> {
+    match nbt.get(&KEY_AUGMENT_ITEM.into())? {
         Tag::String(item) if !item.to_string_lossy().is_empty() => Some(item.to_string_lossy()),
         _ => None,
     }

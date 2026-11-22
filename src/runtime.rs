@@ -35,26 +35,49 @@ pub const RANDOM_TICK_ACCELERATION_CHANCE: f64 = 0.03;
 /// of the 16 the parent mod registers (`DyeColor.BLUE.ordinal()`).
 pub const LENS: &str = "industrialforegoing:blue_laser_lens";
 
+/// The bar a machine with an efficiency augment runs: `(int) Math.floor(MAX_PROGRESS * efficiency)`,
+/// the rescale `SoulLaserBaseBlockEntity.onWork` ends with. A value that would give a bar of zero
+/// (or less than one tick) is clamped to one, because a zero bar never finishes; the two augments
+/// upstream ships are 0.9 (tier 1) and 0.8 (tier 2).
+#[must_use]
+pub fn bar_max(efficiency: f32) -> u32 {
+    let ticks = (MAX_PROGRESS as f32 * efficiency).floor();
+    // A negative, NaN or absurd value saturates rather than wrapping, and a bar of zero would
+    // never finish, so one tick is the floor.
+    u32::try_from(ticks as i64).unwrap_or(1).max(1)
+}
+
 /// The laser base's own state: the soul tank and the operation bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LaserBase {
     /// Souls in the 1,350 tank.
     pub souls: u32,
-    /// Ticks left on the 20-tick bar; 0 fires on the next tick.
+    /// Ticks left on the bar; 0 fires on the next tick.
     pub progress: u32,
+    /// Ticks one full bar is: [`MAX_PROGRESS`], or the efficiency augment's rescale.
+    pub bar: u32,
 }
 
 impl LaserBase {
     /// A machine from its saved numbers, clamped to the two capacities (a `/data merge` or an older
-    /// save may carry anything; a machine that starts a bar from nothing gets a full one).
+    /// save may carry anything; a machine that starts a bar from nothing gets a full one). A saved
+    /// bar of zero is not a bar, so it is read as [`MAX_PROGRESS`].
     #[must_use]
-    pub fn from_saved(souls: i32, progress: Option<i32>) -> Self {
+    pub fn from_saved(souls: i32, progress: Option<i32>, bar: Option<i32>) -> Self {
         let souls = u32::try_from(souls).unwrap_or(0).min(SOUL_STORAGE);
+        let bar = bar
+            .and_then(|ticks| u32::try_from(ticks).ok())
+            .filter(|ticks| *ticks > 0)
+            .unwrap_or(MAX_PROGRESS);
         let progress = progress
             .and_then(|ticks| u32::try_from(ticks).ok())
-            .unwrap_or(MAX_PROGRESS)
-            .min(MAX_PROGRESS);
-        Self { souls, progress }
+            .unwrap_or(bar)
+            .min(bar);
+        Self {
+            souls,
+            progress,
+            bar,
+        }
     }
 
     /// One tick of the bar. Returns whether the operation fired, in which case the caller hurts the
@@ -62,13 +85,21 @@ impl LaserBase {
     ///
     /// The operation needs the blue lens seated, a tank with room, and a warden whose health is
     /// above [`DAMAGE_PER_OPERATION`]. The bar resets whether or not it fired, as the parent's
-    /// `ProgressBarComponent` with `setCanReset(true)` does.
-    pub fn tick(&mut self, lens: bool, warden_health: Option<f32>) -> bool {
+    /// `ProgressBarComponent` with `setCanReset(true)` does — and, as upstream's `onWork` does at
+    /// its end, the reset length is the augmented one, so the *next* cycle is the short one.
+    /// `efficiency` is the seated efficiency augment's value, `None` when there is none.
+    pub fn tick(
+        &mut self,
+        lens: bool,
+        warden_health: Option<f32>,
+        efficiency: Option<f32>,
+    ) -> bool {
         self.progress = self.progress.saturating_sub(1);
         if self.progress > 0 {
             return false;
         }
-        self.progress = MAX_PROGRESS;
+        self.bar = efficiency.map_or(MAX_PROGRESS, bar_max);
+        self.progress = self.bar;
         let has_room = self.souls < SOUL_STORAGE;
         let woundable = warden_health.is_some_and(|health| health > DAMAGE_PER_OPERATION);
         if !(lens && has_room && woundable) {
@@ -239,12 +270,25 @@ mod tests {
 
     /// Run `ticks` ticks against an unwounded warden and return how many fired.
     fn run(base: &mut LaserBase, lens: bool, warden: Option<f32>, ticks: u32) -> u32 {
-        (0..ticks).filter(|_| base.tick(lens, warden)).count() as u32
+        run_with(base, lens, warden, ticks, None)
+    }
+
+    /// The same, with an efficiency augment's value (`None` for an unaugmented machine).
+    fn run_with(
+        base: &mut LaserBase,
+        lens: bool,
+        warden: Option<f32>,
+        ticks: u32,
+        efficiency: Option<f32>,
+    ) -> u32 {
+        (0..ticks)
+            .filter(|_| base.tick(lens, warden, efficiency))
+            .count() as u32
     }
 
     #[test]
     fn a_full_bar_needs_twenty_ticks_before_the_first_operation() {
-        let mut base = LaserBase::from_saved(0, None);
+        let mut base = LaserBase::from_saved(0, None, None);
         assert_eq!(base.progress, MAX_PROGRESS, "a new machine starts full");
         assert_eq!(
             run(&mut base, true, WARDEN, 19),
@@ -269,7 +313,7 @@ mod tests {
 
     #[test]
     fn without_the_lens_no_souls_are_made() {
-        let mut base = LaserBase::from_saved(0, None);
+        let mut base = LaserBase::from_saved(0, None, None);
         assert_eq!(
             run(&mut base, false, WARDEN, 200),
             0,
@@ -291,7 +335,7 @@ mod tests {
 
     #[test]
     fn a_warden_at_the_damage_floor_is_left_alone() {
-        let mut base = LaserBase::from_saved(0, None);
+        let mut base = LaserBase::from_saved(0, None, None);
         // `getHealth() > DAMAGE_PER_OPERATION` is strict: at exactly 4 the operation is refused.
         assert_eq!(run(&mut base, true, Some(DAMAGE_PER_OPERATION), 40), 0);
         assert_eq!(base.souls, 0);
@@ -304,7 +348,7 @@ mod tests {
 
     #[test]
     fn no_warden_means_no_operation_and_a_reset_bar() {
-        let mut base = LaserBase::from_saved(0, None);
+        let mut base = LaserBase::from_saved(0, None, None);
         assert_eq!(run(&mut base, true, None, 20), 0);
         assert_eq!(base.souls, 0);
         assert_eq!(base.progress, MAX_PROGRESS, "the bar resets anyway");
@@ -314,14 +358,14 @@ mod tests {
     fn the_tank_stops_at_1350() {
         // `soulAmount < SOUL_STORAGE` is checked before the operation, so one soul short still runs
         // it and clamps; a full tank runs nothing.
-        let mut base = LaserBase::from_saved(SOUL_STORAGE as i32 - 1, None);
+        let mut base = LaserBase::from_saved(SOUL_STORAGE as i32 - 1, None, None);
         assert_eq!(
             run(&mut base, true, WARDEN, 20),
             1,
             "one soul short still fires"
         );
         assert_eq!(base.souls, SOUL_STORAGE, "the machine does not overfill");
-        let mut full = LaserBase::from_saved(SOUL_STORAGE as i32, None);
+        let mut full = LaserBase::from_saved(SOUL_STORAGE as i32, None, None);
         assert_eq!(
             run(&mut full, true, WARDEN, 60),
             0,
@@ -332,22 +376,117 @@ mod tests {
 
     #[test]
     fn a_saved_tank_is_clamped_to_the_capacity() {
-        assert_eq!(LaserBase::from_saved(9_999, Some(0)).souls, SOUL_STORAGE);
-        assert_eq!(LaserBase::from_saved(-5, Some(0)).souls, 0);
-        assert_eq!(LaserBase::from_saved(10, Some(999)).progress, MAX_PROGRESS);
-        assert_eq!(LaserBase::from_saved(10, Some(3)).progress, 3);
-        assert_eq!(LaserBase::from_saved(10, Some(0)).progress, 0);
+        assert_eq!(
+            LaserBase::from_saved(9_999, Some(0), None).souls,
+            SOUL_STORAGE
+        );
+        assert_eq!(LaserBase::from_saved(-5, Some(0), None).souls, 0);
+        assert_eq!(
+            LaserBase::from_saved(10, Some(999), None).progress,
+            MAX_PROGRESS
+        );
+        assert_eq!(LaserBase::from_saved(10, Some(3), None).progress, 3);
+        assert_eq!(LaserBase::from_saved(10, Some(0), None).progress, 0);
     }
 
     #[test]
     fn the_analog_output_scales_the_tank_to_fifteen() {
-        assert_eq!(LaserBase::from_saved(0, None).analog_output(), 0);
+        assert_eq!(LaserBase::from_saved(0, None, None).analog_output(), 0);
         assert_eq!(
-            LaserBase::from_saved(SOUL_STORAGE as i32, None).analog_output(),
+            LaserBase::from_saved(SOUL_STORAGE as i32, None, None).analog_output(),
             15
         );
-        assert_eq!(LaserBase::from_saved(675, None).analog_output(), 7);
-        assert_eq!(LaserBase::from_saved(1349, None).analog_output(), 14);
+        assert_eq!(LaserBase::from_saved(675, None, None).analog_output(), 7);
+        assert_eq!(LaserBase::from_saved(1349, None, None).analog_output(), 14);
+    }
+
+    // -----------------------------------------------------------------------
+    // The efficiency augment (`titanium:augments`, Titanium's `AugmentTypes`)
+    // -----------------------------------------------------------------------
+
+    /// `SoulLaserBaseBlockEntity.onWork`'s last line: `(int) Math.floor(20 * efficiency)`.
+    #[test]
+    fn the_bar_maximum_is_the_floor_of_twenty_times_efficiency() {
+        assert_eq!(bar_max(0.8), 16, "the tier 2 augment");
+        assert_eq!(bar_max(0.9), 18, "the tier 1 augment");
+        assert_eq!(bar_max(1.0), MAX_PROGRESS, "an augment of one is no change");
+        assert_eq!(bar_max(1.5), 30, "a longer bar is allowed");
+        assert_eq!(bar_max(0.0), 1, "a zero bar would never finish");
+        assert_eq!(bar_max(f32::NAN), 1, "a bar the arithmetic cannot read");
+    }
+
+    /// The first bar is the plain twenty: upstream rescales it at the *end* of `onWork`, so the
+    /// operation that seats the value is still the long one.
+    #[test]
+    fn an_efficiency_augment_shortens_the_bar_after_the_first_operation() {
+        let mut base = LaserBase::from_saved(0, None, None);
+        assert_eq!(base.bar, MAX_PROGRESS, "an unaugmented machine's bar");
+        assert_eq!(
+            run_with(&mut base, true, WARDEN, 19, Some(0.8)),
+            0,
+            "nineteen ticks are not the first twenty"
+        );
+        assert_eq!(
+            run_with(&mut base, true, WARDEN, 1, Some(0.8)),
+            1,
+            "the first operation is the plain bar's"
+        );
+        assert_eq!(base.bar, 16, "floor(20 x 0.8) after the operation");
+        assert_eq!(
+            base.progress, 16,
+            "the next cycle starts at the shortened bar"
+        );
+        assert_eq!(
+            run_with(&mut base, true, WARDEN, 15, Some(0.8)),
+            0,
+            "fifteen of sixteen is not an operation"
+        );
+        assert_eq!(
+            run_with(&mut base, true, WARDEN, 1, Some(0.8)),
+            1,
+            "the sixteenth is"
+        );
+        assert_eq!(base.souls, 2 * SOULS_PER_OPERATION);
+    }
+
+    #[test]
+    fn a_tier_one_efficiency_augment_gives_an_eighteen_tick_bar() {
+        let mut base = LaserBase::from_saved(0, None, None);
+        assert_eq!(run_with(&mut base, true, WARDEN, 20, Some(0.9)), 1);
+        assert_eq!(base.bar, 18, "floor(20 x 0.9)");
+        assert_eq!(run_with(&mut base, true, WARDEN, 17, Some(0.9)), 0);
+        assert_eq!(run_with(&mut base, true, WARDEN, 1, Some(0.9)), 1);
+    }
+
+    /// The parsed number the e2e reads: a shortened bar turns 160 ticks into ten operations where
+    /// the plain bar could only fit eight.
+    #[test]
+    fn ten_operations_of_a_sixteen_tick_bar_store_twenty_souls() {
+        let mut base = LaserBase::from_saved(0, None, Some(16));
+        let operations = run_with(&mut base, true, WARDEN, 160, Some(0.8));
+        assert_eq!(operations, 10, "160 ticks, sixteen a bar");
+        assert_eq!(base.souls, 2 * operations);
+        let mut plain = LaserBase::from_saved(0, None, None);
+        assert_eq!(
+            run(&mut plain, true, WARDEN, 160),
+            8,
+            "the same window at the plain bar"
+        );
+    }
+
+    #[test]
+    fn a_saved_bar_is_kept_and_a_zero_one_is_not() {
+        let mut machine = LaserBase::from_saved(0, None, Some(16));
+        assert_eq!(machine.bar, 16);
+        assert_eq!(machine.progress, 16, "a fresh machine starts full");
+        assert_eq!(LaserBase::from_saved(0, Some(5), Some(16)).progress, 5);
+        assert_eq!(LaserBase::from_saved(0, Some(99), Some(16)).progress, 16);
+        assert_eq!(
+            LaserBase::from_saved(0, None, Some(0)).bar,
+            MAX_PROGRESS,
+            "a saved zero bar is no bar"
+        );
+        assert_eq!(run_with(&mut machine, true, WARDEN, 16, Some(0.8)), 1);
     }
 
     #[test]

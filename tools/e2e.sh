@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# In-game check for Industrial Foregoing: Souls 0.2.0 — the one soul economy.
+# In-game check for Industrial Foregoing: Souls 0.2.1 — the one soul economy, its efficiency
+# augment, and the parent laser machinery's use of its ore recipe.
 #
 # The Soul Laser Base seats `industrialforegoing:blue_laser_lens` in its catalyst slot and, with a
 # warden inside the box above it, turns 20 ticks into 4 damage and 2 souls; the Soul Pipe pulls 4 a
@@ -27,8 +28,11 @@
 # no `libindustrialforegoingsouls.so` and no `horizon-native-mods/industrialforegoingsouls/`. It fails
 # at the first item assertion, which is what makes the modded run evidence.
 #
-# SELFTEST=1 flips phase B's "no lens, no souls" (it must FAIL); SELFTEST=grow flips phase F's control
-# crop (the unaccelerated wheat must have stayed at age 0); a run that fails either never reaches PASS.
+# SELFTEST=1 flips phase B's "no lens, no souls" and SELFTEST=grow flips phase G's control crop (the
+# unaccelerated wheat must have stayed at age 0); SELFTEST=augment asserts the plain bar's rate on a
+# machine with the augment seated, and SELFTEST=laser asserts the parent's base yielded no echo
+# shard. Each must FAIL against the 0.2.1 package, which is what makes the bearing leg evidence; a
+# run that fails never reaches PASS.
 set -Eeuo pipefail
 export LC_ALL=C
 [ -z "${IF_DEBUG:-}" ] || set -x
@@ -157,6 +161,92 @@ aim_machine() {
     ctl wait 6 >/dev/null
 }
 
+# --- the parent's laser machinery (phase M2) -------------------------------------------------
+# The ore base and the drill are `industrialforegoing`'s blocks: this port only supplies the
+# `laser_drill_ore` recipe they run. The helpers are the parent port's own (`tools/e2e.sh`).
+
+# Place an item from the hotbar on the block under X Y Z, looking up at its floor.
+place_any() { # place_any X Y Z ITEM
+    local x=$1 y=$2 z=$3 item=$4
+    ctl command "item replace entity @s hotbar.0 with $item 1" >/dev/null
+    ctl wait 6
+    ctl select 1 >/dev/null
+    ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 $y $z.5" >/dev/null
+    ctl wait 6
+    ctl look-at-block "$x" $((y - 1)) "$z" up >/dev/null 2>&1 || fail "cannot aim at the floor under $x,$y,$z"
+    ctl wait 8
+    ctl place "$x" "$y" "$z" --item "$item" >/dev/null || fail "the $item did not place at $x,$y,$z"
+    ctl wait 6
+    [ "$(block_name "$x" "$y" "$z")" = "$item" ] \
+        || fail "the $item did not place at $x,$y,$z (got '$(block_name "$x" "$y" "$z")')"
+}
+
+# The drill one block above the base at X Y Z, placed **from its item while looking down**, which
+# is what makes its six-way `facing` `up` and puts the base in its working area below.
+place_drill_above() { # place_drill_above X Y Z (of the base)
+    local x=$1 y=$2 z=$3 item=industrialforegoing:laser_drill
+    ctl command "item replace entity @s hotbar.0 with $item 1" >/dev/null
+    ctl wait 6
+    ctl select 1 >/dev/null
+    # One east and five up: inside vanilla's reach, and the player does not land on the block
+    # being placed before the placement lands.
+    ctl command "execute in minecraft:the_end run tp @s $((x + 1)).5 $((y + 5)) $z.5" >/dev/null
+    ctl wait 4
+    ctl look-at-block "$x" "$y" "$z" up >/dev/null 2>&1 || fail "cannot aim at the base's top face"
+    ctl wait 2
+    ctl place "$x" $((y + 1)) "$z" --item "$item" >/dev/null || fail "the drill did not place above the base"
+    ctl wait 4
+    [ "$(block_name "$x" $((y + 1)) "$z")" = "$item" ] \
+        || fail "the drill did not place at $x $((y + 1)) $z (got '$(block_name "$x" $((y + 1)) "$z")')"
+}
+
+# One `/industrialforegoing` command of a laser machine at its position.
+lasay() { # lasay X Y Z SUB [ARGS...]
+    local x=$1 y=$2 z=$3 sub=$4
+    shift 4
+    say "industrialforegoing $sub $x $y $z${*:+ $*}"
+}
+
+# `/industrialforegoing info` of a laser machine, read from the game's own `[CHAT]` log and then
+# from the live message window (the two readers the parent's slice needed).
+laser_info() { # laser_info X Y Z base|drill
+    local x=$1 y=$2 z=$3 kind=$4 pattern before now line="" attempt
+    if [ "$kind" = base ]; then
+        pattern='Ore Laser Base at .*, biome '
+    else
+        pattern='Laser Drill at .*, target '
+    fi
+    before=$(ctl logs --lines 400 | grep -c "\[CHAT\] $pattern" || true)
+    say "industrialforegoing info $x $y $z"
+    for attempt in $(seq 1 12); do
+        ctl wait 2 >/dev/null
+        now=$(ctl logs --lines 400 | grep -c "\[CHAT\] $pattern" || true)
+        if [ "$now" -gt "$before" ]; then
+            line=$(ctl logs --lines 400 | grep "\[CHAT\] $pattern" \
+                | tail -1 | sed 's/^.*\[CHAT\] //' || true)
+            break
+        fi
+    done
+    if [ -z "$line" ]; then
+        for attempt in $(seq 1 10); do
+            say "industrialforegoing info $x $y $z"
+            ctl wait 3 >/dev/null
+            line=$(ctl messages 60 | jq -r '.chat[]' | grep -E "$pattern" | tail -1 || true)
+            [ -n "$line" ] && break
+        done
+    fi
+    [ -n "$line" ] || fail "no fresh /industrialforegoing info reply for the laser machine"
+    eval "$(python3 "$PORT/tools/parse_laser.py" "$line")"
+    [ "${ok:-0}" = 1 ] || fail "the laser machine's info line did not parse: $line"
+    echo "  $line" >&2
+}
+
+# One slot of the parent base's container: 0-5 are the lens slots, 6-20 the output slots.
+base_slot() { # base_slot X Y Z N
+    ctl container "$1" "$2" "$3" | jq -r --argjson n "$4" \
+        '.slots[$n] | if . == null then "empty" else "\(.item) x\(.count)" end'
+}
+
 echo "== launch (The End arena, one package with content and code) =="
 launch
 arena
@@ -250,7 +340,76 @@ info $BASE_POS
 expect "the tank after 60 ticks with the lens out" "$SOULS" "$BEFORE"
 echo "  the lens taken back: the tank stays at $SOULS souls for 60 ticks"
 
+echo "== D2: the efficiency augment is seated by a click, and speed is refused =="
+# Titanium's augment inventory is two slots; `canAcceptAugment` on this machine refuses Speed and
+# accepts Efficiency, and `onWork` rescales the bar to `floor(20 x efficiency)` after an operation.
+ctl command "give @s industrialforegoing:efficiency_addon_tier_2 1" >/dev/null
+ctl wait 8 >/dev/null
+ctl select industrialforegoing:efficiency_addon_tier_2 >/dev/null 2>&1 \
+    || fail "the efficiency addon is not in the hotbar"
+aim_machine
+ctl use-item >/dev/null || fail "the right-click with the efficiency addon on the machine failed"
+ctl wait 8 >/dev/null
+info $BASE_POS
+expect "the efficiency the seated augment reads" "$EFFICIENCY" "0.80"
+expect "the addon the seat took from the hand" "$(held industrialforegoing:efficiency_addon_tier_2)" 0
+# The bar rescales at the end of the next operation, with or without the lens seated (upstream's
+# `onWork` runs on the bar, not on the harvest), so one bar later it is 16 and not 20.
+ctl wait 20 >/dev/null
+info $BASE_POS
+expect "the bar the augment rescales" "$PROGRESS_MAX" 16
+echo "  efficiency 0.80 seated; the bar is $PROGRESS_MAX after one operation"
+# A speed addon is refused: it stays in the hand and no slot takes it.
+ctl command "give @s industrialforegoing:speed_addon_tier_1 1" >/dev/null
+ctl wait 8 >/dev/null
+ctl select industrialforegoing:speed_addon_tier_1 >/dev/null 2>&1 \
+    || fail "the speed addon is not in the hotbar"
+aim_machine
+ctl use-item >/dev/null 2>&1 || true
+ctl wait 8 >/dev/null
+info $BASE_POS
+expect "the efficiency after the refused speed addon" "$EFFICIENCY" "0.80"
+expect "the refused speed addon is still held" "$(held industrialforegoing:speed_addon_tier_1)" 1
+echo "  a speed addon is refused and stays in the hand"
+
+echo "== D3: the shortened bar (16 ticks) ten times over one 160-tick window =="
+ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
+ctl wait 8 >/dev/null
+ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the lens is not in the hotbar"
+aim_machine
+ctl use-item >/dev/null || fail "the right-click with the lens on the machine failed"
+ctl wait 8 >/dev/null
+info $BASE_POS
+expect "the lens back in with the augment seated" "$LENS" "industrialforegoing:blue_laser_lens"
+ctl wait 24 >/dev/null
+info $BASE_POS
+expect "the bar still the augmented one" "$PROGRESS_MAX" 16
+SOULS_BEFORE=$SOULS
+ctl wait 160 >/dev/null
+info $BASE_POS
+GAINED=$((SOULS - SOULS_BEFORE))
+# The two readouts cost a couple of ticks each, so the window is ~170 ticks: ten or eleven 16-tick
+# operations. The plain 20-tick bar fits eight in the same window (16 souls), so the bound is what
+# separates the two rates; the unit test pins the exact 10-in-160.
+if [ "$SELFTEST" = augment ]; then
+    echo "(selftest: asserting the plain bar's rate)"
+    [ "$GAINED" -le 16 ] \
+        || fail "selftest: the shortened bar gained $GAINED souls, expected no more than the plain bar's 16"
+fi
+[ "$GAINED" -ge 20 ] \
+    || fail "the shortened bar stored $GAINED souls in the window, less than ten 16-tick operations (the plain bar fits eight)"
+echo "  efficiency 0.80: bar $PROGRESS_MAX, $GAINED souls in the window (the plain bar fits 8 operations)"
+
 echo "== E: the pipe pulls 4 a tick into a network of 4 souls a pipe =="
+# The tank must not move on its own while the pipe is measured: the lens comes back out (D3 left it
+# in, and a seated lens keeps harvesting a warden every 16 ticks).
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+aim_machine
+ctl use-item >/dev/null || fail "the right-click with an empty hand on the machine failed"
+ctl wait 8 >/dev/null
+info $BASE_POS
+expect "the lens out again for the pipe measurement" "$LENS" "none"
 say "industrialforegoingsouls souls $BASE_POS 50"
 ctl wait 6 >/dev/null
 info $BASE_POS
@@ -405,4 +564,52 @@ case "$REFUSAL" in
 esac
 echo "  a vanilla position is refused by name"
 
-echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens back freezes the tank; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken"
+echo "== M2: the parent's ore base runs this package's laser_drill_ore recipe =="
+# The base and the drill are the parent package's blocks; what this package adds is the recipe the
+# base's table resolves and the `deep_dark` biome tag it filters on. A one-mod game cannot host the
+# package at all (the lens is the parent's), so this leg is the two-mod game `e2e-two-mod.sh` builds.
+LX=200
+LY=101
+LZ=6
+ctl command "gamemode creative @s" >/dev/null
+ctl command "difficulty peaceful" >/dev/null
+ctl command "execute in minecraft:the_end run kill @e[type=!player]" >/dev/null
+ctl wait 8 >/dev/null
+place_any $LX $LY $LZ industrialforegoing:ore_laser_base
+place_drill_above $LX $LY $LZ
+laser_info $LX $((LY + 1)) $LZ drill
+expect "the drill's target (the base below it)" "$LD_TARGET" "[$LX, $LY, $LZ]"
+expect "the drill's facing (placed while looking down)" "$LD_FACING" up
+laser_info $LX $LY $LZ base
+expect "the base's own table with this package's recipe" "$LA_RULES" 11
+expect "the recipe files the game kept" "$LA_FILES" 11
+expect "the ore in the End's own biome" "$LA_RECIPE" none
+echo "  $LA_RULES/$LA_FILES recipes; no match in $LA_BIOME"
+# The recipe's rarity whitelists `industrialforegoingsouls:deep_dark`, the tag this package ships,
+# over a depth band; `fillbiome` makes the box deep dark and the depth setter picks the band.
+ctl command "execute in minecraft:the_end run fillbiome $((LX - 8)) 96 $((LZ - 8)) $((LX + 8)) 112 $((LZ + 8)) minecraft:deep_dark" >/dev/null
+lasay $LX $LY $LZ depth 0
+ctl wait 8 >/dev/null
+laser_info $LX $LY $LZ base
+expect "the biome this package's tag names" "$LA_BIOME" minecraft:deep_dark
+expect "the depth the rarity reads" "$LA_DEPTH" 0
+expect "this package's recipe, resolved by the parent's own type" "$LA_RECIPE" "industrialforegoingsouls:laser_drill_ore/echo_shard"
+expect "its weight" "$LA_WEIGHT" 1
+echo "  $LA_BIOME at depth $LA_DEPTH: $LA_RECIPE, weight $LA_WEIGHT"
+# One completed base bar, charged by one completed drill bar: 1,000 FE and the recipe's ore.
+lasay $LX $LY $LZ progress 99
+lasay $LX $((LY + 1)) $LZ energy 10000
+lasay $LX $((LY + 1)) $LZ progress 1
+ctl wait 10 >/dev/null
+laser_info $LX $((LY + 1)) $LZ drill
+expect "the charge the drill spent" "$LD_ENERGY" 9000
+ORY=$(base_slot $LX $LY $LZ 6)
+laser_info $LX $LY $LZ base
+if [ "$SELFTEST" = laser ]; then
+    echo "(selftest: asserting this package's ore did not appear)"
+    [ "$ORY" = "empty" ] || fail "selftest: the base yielded $ORY, expected an empty output slot"
+fi
+expect "this package's ore in the base's output" "$ORY" "minecraft:echo_shard x1"
+echo "  one base bar for the drill's 1,000 FE yielded $ORY"
+
+echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens back freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand, and the seated addon comes back out on an empty hand; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE"

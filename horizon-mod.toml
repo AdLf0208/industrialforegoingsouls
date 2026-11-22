@@ -1,14 +1,19 @@
 id = "industrialforegoingsouls"
 name = "Industrial Foregoing: Souls"
-version = "0.2.0"
+version = "0.2.1"
 description = """A port of Industrial Foregoing: Souls for Horizon: the three blocks that are one soul
 economy. The Soul Laser Base seats an `industrialforegoing:blue_laser_lens` in its catalyst slot and,
 with a warden inside the box above it, hurts it for 4 every 20 ticks and stores 2 souls of the damage
 in a 1,350-soul tank. The Soul Pipe walks a network of up to 4 souls a block and pulls 4 a tick out of
 any adjacent soul handler into it. The Soul Surge spends one soul for 300 ticks and random-ticks the
-block it is mounted on four times at a 3% chance a tick, and stops while it is powered. The rest of
-the mod (the Sculk Soul Tank screen addon, the parent's laser-drill recipe type, the entity and
-block-entity acceleration branches, the comparator output) is not ported; notes.md says why."""
+block it is mounted on four times at a 3% chance a tick, and stops while it is powered. An
+`industrialforegoing:efficiency_addon_*` seated in the machine rescales its bar to
+`floor(20 x efficiency)` after an operation, exactly as Titanium's augment inventory does; a speed
+addon is refused. The package also carries the mod's one `industrialforegoing:laser_drill_ore`
+recipe (an echo shard, from the `industrialforegoingsouls:deep_dark` biome tag it declares), so the
+parent's ore laser base can mine it. The rest of the mod (the Sculk Soul Tank screen addon, the
+entity and block-entity acceleration branches, the comparator output) is not ported; notes.md says
+why."""
 authors = ["Buuz135", "AdLf0208"]
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins, beside
 # the content this one also carries (assets/industrialforegoingsouls, data/industrialforegoingsouls).

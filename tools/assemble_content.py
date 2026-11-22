@@ -12,7 +12,10 @@ textures, loot tables and recipes come out of the jar, re-spelled only where 26.
 * the pipe's three-value connection enum (`none|block|pipe`) -> the engine's `chorus_plant` template
   with a boolean a side, because 26.3 builds a pipe's shape and joins itself (see notes.md);
 * the surge's `enabled`/connection properties are **not** declared: this pin cannot rewrite a block
-  state outside `set_block`, so the surge draws as its model and its redstone rule lives in the tick.
+  state outside `set_block`, so the surge draws as its model and its redstone rule lives in the tick;
+* the one `laser_drill_ore` recipe (echo shard, deep dark) is carried as the jar writes it: its type
+  is the parent package's, and its object-form `catalyst`/`output` are that type's own serializer's
+  dialect, not a shaped recipe's ingredient.
 
 The block/item declarations, the 26.3 item definitions and the lang subset are written here. Rerun it
 to rebuild (`assets/` and `data/` are deleted first):
@@ -272,6 +275,24 @@ def build() -> dict[str, bytes]:
         advancement = json.loads(read_data(archive, f"advancement/recipes/misc/{name}.json"))
         advancement.pop("neoforge:conditions", None)
         put(entry, advancement)
+
+    # --- the parent's ore recipe: the one `laser_drill_ore` file the jar carries ---------------
+    # The recipe type is `industrialforegoing:laser_drill_ore`, which the **parent** package
+    # registers; a game without the parent refuses this package at load anyway (the lens is the
+    # parent's item), so the file always has its type. The jar's folder holds one file (echo
+    # shard); its `deep_dark` biome tag is what the rarity's whitelist names.
+    put(
+        f"data/{MOD}/recipe/laser_drill_ore/echo_shard.json",
+        json.loads(read_data(archive, "recipe/laser_drill_ore/echo_shard.json")),
+    )
+    put(
+        f"data/{MOD}/tags/worldgen/biome/deep_dark.json",
+        {"values": ["minecraft:deep_dark"]},
+    )
+    put(
+        f"data/{MOD}/advancement/laser_drill_ore/echo_shard.json",
+        json.loads(read_data(archive, "advancement/laser_drill_ore/echo_shard.json")),
+    )
 
     return files
 

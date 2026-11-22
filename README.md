@@ -7,7 +7,9 @@ The mod is one soul economy in three blocks:
 
 - **Soul Laser Base** — seats an `industrialforegoing:blue_laser_lens` in its catalyst slot and, with
   a warden in the 3×3×3 box above it, hurts the warden for 4 every 20 ticks and stores 2 souls in a
-  1,350-soul tank.
+  1,350-soul tank. An `industrialforegoing:efficiency_addon_*` seats in its augment slot and rescales
+  the bar to `floor(20 × efficiency)` after an operation (the tier 2 addon makes it 16 ticks); a
+  speed addon is refused.
 - **Soul Pipe** — carries souls: 4 a block of capacity, 4 a tick pulled out of an adjacent soul
   handler and pushed into one that accepts.
 - **Soul Surge** — spends one soul on 300 accelerated ticks and random-ticks the block it is mounted
@@ -24,9 +26,13 @@ Horizon mods are single `.hmod` files (code and content together), built by the 
 against the pinned game build: `industrialforegoingsouls.hmod` is the package.
 
 In play: place the laser base, right-click it with a blue lens to seat it (an empty hand takes it
-back), put a warden above it, and run the souls into a pipe network with a surge on whatever you want
-to accelerate. `/industrialforegoingsouls info <x> <y> <z>` prints a block's whole state;
-`souls` and `wait` (operator) set it.
+back), right-click with an efficiency addon to seat that too, put a warden above it, and run the
+souls into a pipe network with a surge on whatever you want to accelerate.
+`/industrialforegoingsouls info <x> <y> <z>` prints a block's whole state; `souls` and `wait`
+(operator) set it.
+
+The package also carries the mod's one `industrialforegoing:laser_drill_ore` recipe — an echo shard
+from the deep dark — so the parent's ore laser base can mine it.
 
 ## What this port does not do
 
@@ -35,7 +41,8 @@ to accelerate. `/industrialforegoingsouls info <x> <y> <z>` prints a block's who
 - The surge's machine-accelerating and entity-accelerating branches (no helper ticks another block
   entity, or an entity).
 - The Sculk Soul Tank screen addon (the parent GUI it draws on is not ported).
-- The parent's `laser_drill_ore` recipe type, so the echo-shard laser-drill recipe is not carried.
+- A screen for the two augment slots: the click is the only way in or out, and a broken machine does
+  not carry its augments or its lens on its item.
 - A config file: the numbers are constants.
 - Waterlogging, and the surge's `enabled`/connection block states (the redstone rule is read in the
   tick instead).
@@ -46,7 +53,7 @@ to accelerate. `/industrialforegoingsouls info <x> <y> <z>` prints a block's who
 ## Building and testing
 
 ```
-cargo test                                                  # the pure runtime, 17 tests
+cargo test                                                  # the pure runtime, 22 tests
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 rm -f Cargo.lock && cargo horizon-mod build                 # -> industrialforegoingsouls.hmod
 cargo horizon-mod check industrialforegoingsouls.hmod

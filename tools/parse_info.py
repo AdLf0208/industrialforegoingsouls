@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Parse a `/industrialforegoingsouls info` line into shell assignments.
 
-    Soul Laser Base at [194, 102, 0]: souls 6/1350, progress 3/20, lens industrialforegoing:blue_laser_lens, warden 488.0, t=264
+    Soul Laser Base at [194, 102, 0]: souls 6/1350, progress 3/20, lens industrialforegoing:blue_laser_lens, augments efficiency 0.80, warden 488.0, t=264
     Soul Pipe at [195, 102, 0]: network 4/4, t=264
     Soul Surge at [194, 102, -1]: network 3/8, wait 290/300, facing south, powered false, t=264
 
-Prints `ok=1` and the fields the line carries (`SOULS=`, `PROGRESS=`, `LENS=`,
-`WARDEN=`, `NETWORK=`, `NET_CAP=`, `WAIT=`, `WAIT_MAX=`, `FACING=`, `POWERED=`,
-`T=`), or `ok=0`. The e2e `eval`s this.
+Prints `ok=1` and the fields the line carries (`SOULS=`, `PROGRESS=`,
+`PROGRESS_MAX=`, `LENS=`, `EFFICIENCY=`, `WARDEN=`, `NETWORK=`, `NET_CAP=`,
+`WAIT=`, `WAIT_MAX=`, `FACING=`, `POWERED=`, `T=`), or `ok=0`. The e2e `eval`s
+this.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import sys
 BASE = re.compile(
     r"^Soul Laser Base at \[.*?\]: souls (?P<souls>\d+)/(?P<cap>\d+), "
     r"progress (?P<progress>\d+)/(?P<progress_max>\d+), lens (?P<lens>\S+), "
+    r"augments efficiency (?P<efficiency>[\d.]+), "
     r"warden (?P<warden>\S+), t=(?P<t>\d+)$"
 )
 PIPE = re.compile(
