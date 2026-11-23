@@ -35,6 +35,37 @@ menu's two augment slots and the catalyst are how the parts come back out.
 `/industrialforegoingsouls info <x> <y> <z>` prints a block's whole state; `souls` and `wait`
 (operator) set it.
 
+## Config
+
+Every number is the jar's own config setting, and `config/industrialforegoingsouls/config.json`
+overrides it. The game writes the file with the jar's defaults when it is missing:
+
+```json
+{
+  "soul_storage": 1350,
+  "max_progress": 20,
+  "kill_warden": false,
+  "damage_per_operation": 4,
+  "souls_per_operation": 2,
+  "soul_time": 300,
+  "acceleration_tick": 4,
+  "entities_acceleration_tick": 4,
+  "block_acceleration_tick": 4,
+  "random_tick_acceleration_chance": 0.03,
+  "soul_per_pipe": 4,
+  "pipes_particles": 0.1
+}
+```
+
+The tank, the bar, the damage and the souls of an operation, whether a warden may be killed, a
+soul's ticks, the surge's acceleration ticks and chance, and a pipe's share of a network. The file
+is read once when the game loads it and again when it changes on disk — never from a tick — and a
+value outside the jar's own range is clamped (`soul_storage`/`max_progress`/`soul_time`/
+`souls_per_operation` at least 1, the two chances between 0 and 1). A damaged or partial file keeps
+the defaults for the keys it does not name; it cannot crash the game. `acceleration_tick`,
+`entities_acceleration_tick` and `pipes_particles` are accepted and kept for the two acceleration
+branches and the client half this port does not ship (below).
+
 The package also carries the mod's one `industrialforegoing:laser_drill_ore` recipe — an echo shard
 from the deep dark — so the parent's ore laser base can mine it.
 
@@ -55,7 +86,6 @@ pin reverts a water bucket written into the held slot from a click — `notes.md
   panel; the screen's labels are literal English. A broken machine carries its contents on its item
   (souls, the bar, the lens, the addon), and placing it back restores them; a second lens swaps with
   the seated one, which comes back to the player.
-- A config file: the numbers are constants.
 - The waterloggable **interface** itself: a flowing fluid beside the pipe does not fill it and a
   dispenser does not either (a content block's interfaces are its template's), and the port does not
   invent a placement-into-water override the findings do not record. The state, the water the engine
@@ -68,7 +98,7 @@ pin reverts a water bucket written into the held slot from a click — `notes.md
 ## Building and testing
 
 ```
-cargo test                                                  # the pure runtime and its rules, 46 tests
+cargo test                                                  # the pure runtime and its rules, 60 tests
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 rm -f Cargo.lock && cargo horizon-mod build                 # -> industrialforegoingsouls.hmod
 cargo horizon-mod check industrialforegoingsouls.hmod

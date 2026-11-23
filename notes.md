@@ -1,4 +1,4 @@
-# `industrialforegoingsouls` — Industrial Foregoing: Souls 0.2.4
+# `industrialforegoingsouls` — Industrial Foregoing: Souls 0.2.5
 
 The three blocks that are one soul economy, ported from **Industrial Foregoing: Souls 1.21.1-1.10.7**
 into Rust for Horizon 26.3 at the campaign pin.
@@ -10,8 +10,8 @@ into Rust for Horizon 26.3 at the campaign pin.
 | approach (`horizon/docs/modpacks.md`) | **agent port** of the behaviour, with the jar's content carried (models, blockstates, textures, recipes, loot, tags) |
 | pin | Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0` |
 | upstream | `InnovativeOnlineIndustries/Industrial-Foregoing-Souls`, commit `bf736d2f1140da25747ab97d8c160b44d8a0bb7f` (2026-01-10, the jar's `1.10.7`); the jar is `ports/_shared/licence-cache/industrial-foregoing-souls-1.21.1-1.10.7.jar`, sha256 `f4fb3640…67ec` |
-| package | `industrialforegoingsouls.hmod`, **111,572 B**, sha256 `79159d3fead5c82aec88e3526e17098e0c76511244b487147ccc046b36bda82b`, 64 entries, no packed `Cargo.lock` |
-| registry | **first publication**, open on PR #1605; that PR publishes **`0.2.2`** (0.2.0/0.2.1 were dropped at the reviewer's rule — neither carried the declared dependency or the MIT notice). This is `0.2.4` appended to #1605, title `Add industrialforegoingsouls 0.2.4` (the id is not on `main`) |
+| package | `industrialforegoingsouls.hmod`, **121,782 B**, sha256 `e73258cc4aef8ff5e5e4e46d0f78b22b64c70a457dcf93a1932e0878d4474157`, 65 entries, no packed `Cargo.lock` |
+| registry | **first publication**, open on PR #1605; that PR publishes **`0.2.2`** (0.2.0/0.2.1 were dropped at the reviewer's rule — neither carried the declared dependency or the MIT notice). This is `0.2.5` appended to #1605, title `Add industrialforegoingsouls 0.2.5` (the id is not on `main`) |
 
 Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
 
@@ -219,6 +219,71 @@ template change is needed (their blocks are `minecraft:end_rod` and
   with the tier-1 addon onto the seated tier-2 one: different items, `may_place` false, nothing moves.
   Nothing is voided either way.
 
+### 1.6 The 0.2.5 slice: the jar's config values as a real config file
+
+The gap this closes, verbatim from §2 as 0.2.4 left it:
+
+> config (`SOUL_STORAGE_AMOUNT 1350`, `MAX_PROGRESS 20`, `SOULS_PER_OPERATION 2`,
+> `DAMAGE_PER_OPERATION 4`, `SOUL_TIME 300`, `BLOCK_ACCELERATION_TICK 4`,
+> `RANDOM_TICK_ACCELERATION_CHANCE 0.03`, `SOUL_AMOUNT_PER_PIPE 4`) | `config/*.java` | the values
+> are `runtime.rs` constants; **no config file** (a recorded deviation)
+
+and §3 item 7 ("No config file. Every number is a `runtime.rs` constant; a server owner cannot retune
+the economy without a new build"). The eight names in the gap list were this port's own notes; the
+jar's surface is **twelve** keys in two Titanium config files, re-read here from the upstream source
+at `bf736d2f` (`config/ConfigSoulLaserBase.java`, `config/ConfigSoulSurge.java`,
+`config/IFSoulsMachines.java`, `config/IFSoulsClient.java`):
+
+| key | jar default | jar range | read by (jar) | this port |
+|---|---|---|---|---|
+| `SOUL_STORAGE_AMOUNT` | `1350` | `min 1` | `SLBSoulCap.getTankCapacity`, `onWork`'s gate and clamp, the comparator, the parent's Sculk screen | `soul_storage` — tank, clamp, comparator, screen label |
+| `MAX_PROGRESS` | `20` | `min 1` | the `ProgressBarComponent` and `onWork`'s rescale | `max_progress` — the bar and `bar_max` |
+| `KILL_WARDEN` | `false` | boolean | `onWork`'s `health > damage \|\| KILL_WARDEN` | `kill_warden` — the same gate |
+| `DAMAGE_PER_OPERATION` | `4` | `min 0` | `onWork`'s hurt and its strict health gate | `damage_per_operation` |
+| `SOULS_PER_OPERATION` | `2` | `min 1` | `onWork`'s clamp | `souls_per_operation` |
+| `SOUL_TIME` | `300` (`15 * 20`) | `min 1` | `SoulSurgeBlockEntity.serverTick` | `soul_time` |
+| `ACCELERATION_TICK` | `4` | `min 0` | the surge's block-entity branch | accepted, unused: `blocked(no-tick-another-block-entity)` |
+| `ENTITIES_ACCELERATION_TICK` | `4` | `min 0` | the surge's entity branch | accepted, unused: `blocked(no-entity-tick)` |
+| `BLOCK_ACCELERATION_TICK` | `4` | `min 0` | the surge's random-tick branch | `block_acceleration_tick` |
+| `RANDOM_TICK_ACCELERATION_CHANCE` | `0.03` | `0..=1` | the same branch | `random_tick_acceleration_chance` |
+| `SOUL_AMOUNT_PER_PIPE` | `4` | `min 0` | `SoulNetwork.getMaxSouls` | `soul_per_pipe` |
+| `SOUL_PIPES_PARTICLES` | `0.1` | `0..=1` | `SoulPipeBlock`'s client particles | accepted, unused: the client half is not ported |
+
+- **The file is `config/industrialforegoingsouls/config.json`**, a folder of this mod's own, which is
+  what the pin lets a mod claim (`ConfigPath::owned_by`). The jar's own file names are Titanium's
+  (`industrialforegoing-souls-machines`), which a mod id of `industrialforegoingsouls` cannot own; the
+  keys are the settings lower-cased, and the jar's own spellings (`soul_storage_amount`,
+  `soul_amount_per_pipe`, `soul_pipes_particles`) are accepted too.
+- **It is declared, not read by hand.** `register_configs` pushes it as a `ConfigKind::Common` file —
+  the jar's own kind (one file per instance, read once at start) — with the default template, and the
+  game writes that template when the file is missing, so a server owner finds all twelve keys instead
+  of guessing. `config_loading` hands the text in the Config phase (before any world, therefore before
+  any block entity ticks) and `config_reloading` replaces it when the file changes on disk; the engine
+  does the polling. A tick only copies the `Copy` value out of one `RwLock`, so **no file I/O happens
+  in a tick** — the defect the brief named.
+- **JSON, parsed in the pure module.** The pin's convention is TOML, but a parser crate is a
+  dependency the pin refuses (§3's "a port cannot add a crate"), and a flat object of twelve scalars
+  needs none: `runtime::parse_config` is a ~40-line character walker over `"key": value` pairs,
+  unit-tested against an empty file, a half-written one, a byte-order mark, TOML's `key = value`
+  shape, a word where a number belongs, a fraction on an integer key, non-ASCII noise, unknown keys
+  and both spellings. It never fails: anything it cannot read leaves the jar's default in place, and
+  every value it does read goes through `Config::clamped` (the jar's `min`/`max`).
+- **The clamp is the jar's.** `soul_storage`, `max_progress`, `souls_per_operation` and `soul_time`
+  are at least 1 (a tank, a bar, a yield or a soul of zero would be a machine that never runs), the
+  `min = 0` keys floor at 0 (the jar declares no maximum, and this port adds none), and the two
+  chances are clamped to `0..=1`. A hand-built `Config` is clamped the same way by `clamped()`.
+- **The value in force is threaded, not global.** `runtime::Settings` (the type is called `Settings`,
+  not `Config`, for a measured reason below) is a parameter of every rule that reads a number —
+  `LaserBase::from_saved`/`tick`/`analog_output`, `bar_max`, `Network::{new,capacity,add,set}`,
+  `pipe_pull`, `Surge::tick`, `Walked`/`NetworkCache` — so `runtime.rs` stays pure and the config is a
+  value a test can tune.
+- **A name collision, measured.** The first build failed `fits --build 0b14f8a` with *"the type
+  `Config` can no longer be built with a literal, and `src/runtime.rs:86` builds it"*: the `fits`
+  scanner attributes a struct literal whose name matches an API type to that type
+  (`mod_api::Config` is `non_exhaustive` and not constructible), and this port's runtime type was
+  called `Config`. Renaming it to `Settings` (no such API type) made both fits lines green; the
+  ported code did not change. `sdk-check-0.2.5.log` / `sdk-fits-0.2.5.log` are that run.
+
 ## 2. The family table (from the jar, before any code)
 
 147 entries, 329,233 B: three blocks, no items of its own, one client GUI addon, three recipes, three
@@ -240,7 +305,7 @@ loot tables, five tags.
 | comparator output (`getAnalogOutputSignal`) | `block/SoulLaserBaseBlock.java:31-39` | **blocked(`analog-output-needs-block-entity-read`)** — the `analog_output` hook is given `&dyn LevelHost`, which has no way to resolve a block entity by position. Formula and test (`LaserBase::analog_output`) are in `runtime.rs`, ready for the hook |
 | the surge's block-entity branch (×4 ticks of a machine in front) | `SoulSurgeBlockEntity.java:60-70` | **blocked(`no-tick-another-block-entity`)** — `block_entity_tick` ticks the owning entity only |
 | the surge's entity branch (×4 ticks of `LivingEntity`) | `SoulSurgeBlockEntity.java:78-90` | **blocked(`no-entity-tick`)** — no helper ticks an entity |
-| config (`SOUL_STORAGE_AMOUNT 1350`, `MAX_PROGRESS 20`, `SOULS_PER_OPERATION 2`, `DAMAGE_PER_OPERATION 4`, `SOUL_TIME 300`, `BLOCK_ACCELERATION_TICK 4`, `RANDOM_TICK_ACCELERATION_CHANCE 0.03`, `SOUL_AMOUNT_PER_PIPE 4`) | `config/*.java` | the values are `runtime.rs` constants; **no config file** (a recorded deviation) |
+| config: twelve settings in two Titanium files (`ConfigSoulLaserBase`, `ConfigSoulSurge`, `IFSoulsMachines`, `IFSoulsClient`) | `config/*.java` | **ported and tested** (phase T): the game writes the twelve-key template when the file is missing, and a tuned file read before the launch changes the tank (500), the operation (5 souls) and leaves the keys it does not name at the default |
 | waterlogging on the pipe and the surge | `SimpleWaterloggedBlock` | **ported and tested** (phase R): the `waterlogged` state on both, the engine's water fluid state, a water bucket fills it and an empty bucket drains it; the interface itself (a flowing fluid, a dispenser, placement into water) stays `blocked(no-waterlogged-interface)` |
 
 ## 3. What the port does differently, and why
@@ -284,8 +349,13 @@ Each of these is a decision the pin forced; none of them fakes a rule.
    match. The port declares `data/c/tags/item/stones.json` with the 12 vanilla natural stones
    `simplylight` declares, so every port shipping the tag agrees; the e2e crafts with
    `minecraft:stone`, which all four variants in the tree hold.
-7. **No config file.** Every number is a `runtime.rs` constant; a server owner cannot retune the
-   economy without a new build (`/industrialforegoingsouls` has no settings command).
+7. **The config file is JSON in a folder of this mod's own, not the jar's TOML beside it.** The
+   numbers are the jar's twelve settings (§1.6) and the port reads them from
+   `config/industrialforegoingsouls/config.json`. Two reasons: the pin refuses a parser crate, so
+   TOML would mean a hand-written TOML parser for no gain over a flat object; and the jar's file name
+   belongs to another mod id, which the pin's ownership rule would not let this one read
+   (`ConfigPath::owned_by`). The jar's own key spellings are accepted as aliases, so a settings table
+   copied from a NeoForge install still lands.
 8. **The augment slots are the machine's own two slots of a GUI of its own.** Titanium's two-slot
    augment inventory is the container's slots 1 and 2 (the addon item itself, with its
    `titanium:augments` component); the machine's `use_item_on` seats one and takes one out of the
@@ -517,16 +587,94 @@ The in-game legs found four real defects this slice, each traced rather than ret
    the record (the sixth run's log line "the lens the break did not spill is 1, expected 0" is that
    red).
 
+### 4.5 The 0.2.5 slice's red → green (the config file)
+
+Two reds, because the slice has two halves: the file's parsing, then the rules reading it.
+
+**The parser first**, against `todo!()` stubs, with the 46 carried tests running unchanged:
+
+```
+$ cargo test
+test runtime::tests::no_config_file_is_the_jars_defaults ... FAILED
+test runtime::tests::the_config_file_reads_every_key ... FAILED
+test runtime::tests::the_minimums_the_jar_declares_are_enforced ... FAILED
+test runtime::tests::a_value_outside_its_range_is_clamped_not_refused ... FAILED
+test runtime::tests::a_partial_or_broken_file_keeps_the_defaults ... FAILED
+test runtime::tests::unknown_keys_are_ignored_and_both_spellings_are_read ... FAILED
+test runtime::tests::the_written_file_parses_back_and_names_every_key ... FAILED
+thread 'runtime::tests::no_config_file_is_the_jars_defaults' panicked at src/runtime.rs:152:5:
+not yet implemented: slice 0.2.5: parse the config file
+test result: FAILED. 46 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+(`ports/_shared/evidence/industrialforegoingsouls/sdk-test-red-config.log`.)
+
+**Then the rules**, with `&Settings` threaded through the signatures and every body still reading the
+constants, so the five tuned tests were the only failures:
+
+```
+$ cargo test
+test runtime::tests::a_tuned_bar_damage_and_warden_gate_change_the_operation ... FAILED
+test runtime::tests::a_tuned_operation_stores_its_configured_souls ... FAILED
+test runtime::tests::a_tuned_pipe_holds_its_configured_souls ... FAILED
+test runtime::tests::a_tuned_surge_spends_its_configured_time_and_roll ... FAILED
+test runtime::tests::a_tuned_tank_caps_what_the_machine_stores ... FAILED
+thread 'runtime::tests::a_tuned_operation_stores_its_configured_souls' panicked at src/runtime.rs:1822:9:
+assertion `left == right` failed: SOULS_PER_OPERATION = 5
+  left: 2
+thread 'runtime::tests::a_tuned_pipe_holds_its_configured_souls' panicked at src/runtime.rs:1881:9:
+assertion `left == right` failed: six a pipe
+  left: 8
+thread 'runtime::tests::a_tuned_surge_spends_its_configured_time_and_roll' panicked at src/runtime.rs:1907:9:
+assertion `left == right` failed: SOUL_TIME = 120, less the tick
+  left: 299
+thread 'runtime::tests::a_tuned_tank_caps_what_the_machine_stores' panicked at src/runtime.rs:1792:9:
+assertion `left == right` failed: a saved tank is clamped to the configured capacity
+  left: 900
+test result: FAILED. 55 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+(`sdk-test-red-0.2.5.log`.) Green:
+
+```
+$ cargo test
+test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+(`sdk-test.log`.) Two of my own expectations were wrong against upstream and were corrected **in the
+tests**, not in the code: the gate is `getHealth() > DAMAGE_PER_OPERATION || KILL_WARDEN`, so a
+warden at exactly the damage *is* hurt when the flag is on (the test now sets the flag off for that
+assertion); and a soul's first tick both buys the time and spends one tick, so the counter after it
+is `soul_time - 1`, not `soul_time`.
+
+Three things the ladder itself taught, all fixed in the tooling rather than worked around:
+
+- **`fits --build 0b14f8a` failed on the type's name**, not on its behaviour: the scanner attributed
+  `runtime.rs`'s `Config { … }` literal to `mod_api::Config` (non-constructible). The runtime type is
+  `Settings` now; both fits lines are green (§1.6).
+- **The remote runner has no `cargo-horizon-mod`**, so the package build, `check` and both `fits`
+  runs are `BUILD_LOCAL=1` (§8); the test and clippy steps still forward.
+- **A remote `cargo fmt` formats the remote copy**, so the local tree's format is proven by a
+  `BUILD_LOCAL=1` run (`FMT-CLEAN` in `sdk-clippy-0.2.5.log`).
+
+The in-game leg found one real defect, and it was the harness's: **phase M2 leaves the world at
+`peaceful`**, where the server answers `Monsters cannot be summoned in Peaceful difficulty` and phase
+T's warden never existed — the first tuned run failed `80 ticks with a lens and a warden stored no
+souls` with `warden none` in every line. Phase T sets the difficulty back to normal (and asserts the
+warden is in the box) before it summons one; the second run passed. Everything the config file was
+supposed to change was already visible in the failing run — `souls 0/500` and `souls 500/500` — so
+the file itself was read correctly the first time.
+
 ## 5. In-game evidence (fail-capable)
 
 `ports/_shared/evidence/industrialforegoingsouls-e2e/`, all through `tools/e2e-two-mod.sh` (one game
-carrying this port **and** its parent, `industrialforegoing` 0.2.10 when these legs ran). The 0.2.0
+carrying this port **and** its parent, `industrialforegoing` 0.2.11 when these legs ran). The 0.2.0
 legs are kept with a `-0.2.0` suffix and the 0.2.1 ones with `-0.2.1`; the unsuffixed logs are this
-0.2.4 run (2026-11-23, 10:18–10:51):
+0.2.5 run (2026-11-23, 11:58–12:51):
 
 | leg | verdict | what it proves |
 |---|---|---|
-| `e2e-launcher.log` (0.2.4) | **`PASS` + `EXIT:0`** | the whole 0.2.4 scenario, phases A–N, D2–D3, R, S, K–L, P–Q and M2 |
+| `e2e-launcher.log` (0.2.5) | **`PASS` + `EXIT:0`** | the whole scenario, phases A–N, D2–D3, R, S, K–L, P–Q, M2, and this slice's **T** |
 | `e2e-launcher-control.log` | `FAIL: the game refused industrialforegoingsouls:soul_laser_base` + `EXIT:1` | the same script on the same Nightly **without** the package |
 | `e2e-launcher-selftest.log` | `FAIL: selftest: the soul tank is 0, expected anything but 0` + `EXIT:1` | the lens differential can fail |
 | `e2e-launcher-selftest-screen.log` | `FAIL: selftest: the base opened a menu (container), expected none` + `EXIT:1` | **this slice's** menu differential can fail |
@@ -536,10 +684,32 @@ legs are kept with a `-0.2.0` suffix and the 0.2.1 ones with `-0.2.1`; the unsuf
 | `e2e-launcher-selftest-carry.log` | `FAIL: selftest: the restored tank is 30, expected 0` + `EXIT:1` | the carried contents are real, not a stale machine |
 | `e2e-launcher-selftest-replace.log` | `FAIL: selftest: the lens the swap returned is 1, expected 0` + `EXIT:1` | the replaced lens is returned, not voided |
 | `e2e-launcher-selftest-waterlog.log` | `FAIL: selftest: the pipe's waterlogged state is true, expected false` + `EXIT:1` | the water the bucket puts in is real, not a readout |
+| `e2e-launcher-selftest-config.log` | `FAIL: the tank's capacity, from the config in force is 500, expected 1350` + `EXIT:1` | **this slice's** differential: the tuned file really is in force |
 
 `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` →
-`logs=17 ok=17 missing-exit=0 bad-exit=0` (four 0.2.0, three 0.2.1, and the ten unsuffixed legs of
-this run: the green one, the control and the eight selftests).
+`logs=18 ok=18 missing-exit=0 bad-exit=0` (four 0.2.0, three 0.2.1, and the eleven unsuffixed legs of
+this run: the green one, the control and the nine selftests).
+
+**The config transcript**, phase T of this run — the template the game wrote, the tuned file, and what
+it changed in the same machine:
+
+```
+== T: the config file — the machines run the numbers in it (0.2.5) ==
+  the game wrote the template: all twelve keys, soul_storage 1350, souls_per_operation 2
+  tuned file: {"soul_storage":500,"souls_per_operation":5}
+  Soul Laser Base at [194, 101, 0]: souls 0/500, progress 7/20, lens industrialforegoing:blue_laser_lens, augments efficiency 1.00, menu [0, 7, 20], warden 500.0, t=5098
+  seeds 900: souls 500/500, bar 20 (the file named no max_progress)
+  the first operation stored 5 souls (the file names souls_per_operation 5)
+```
+
+The differential is the whole first launch, which never sees a config file the player wrote: phase C
+reads `souls 8/1350` for four operations and `SELFTEST=config` (the same tuned file, the default
+expectation) fails at `the tank's capacity, from the config in force is 500, expected 1350`.
+
+The control and the nine selftests ran on the same source tree and manifest as the delivered package,
+one `README.md` edit earlier (the README is packed, so the package was rebuilt and the **green** leg
+re-run on the final build, `native-0a875da-893f7451dc2f`; the README is documentation, not code, and
+the failing legs' verdicts do not depend on it).
 
 **The menu transcript**, phase S of the 0.2.4 leg — the slots, the lens seated through the menu, the
 data slots and the differential:
@@ -696,7 +866,8 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
 | waterlogging on the pipe and the surge | **tested** — phase R: a fresh pipe reads `waterlogged=false` and `0/4`; a water-bucket click makes it `true` and leaves the empty bucket in the hand; the waterlogged pipe still pulls the laser base `50 → 46` into `4/4`; an empty-bucket click makes it `false` and puts the water bucket in the inventory; a surge set to `[facing=north,waterlogged=true]` reads both properties back and spends a soul (`3/4`, `wait 292 → 256`); a dry surge reads `false`; `SELFTEST=waterlog` fails on the state. The interface-gated half is `blocked(no-waterlogged-interface)` |
 | Sculk Soul Tank screen addon | **not ported** — parent GUI |
 | surge BE / entity branches | **blocked** — `no-tick-another-block-entity`, `no-entity-tick` |
-| config file | **not ported** — constants |
+| the config file (`config/industrialforegoingsouls/config.json`) | **tested** — phase T: the game writes the twelve-key template with the jar's defaults (`soul_storage 1350`, `souls_per_operation 2`); a tuned file `{"soul_storage": 500, "souls_per_operation": 5}` written **before** a second launch makes the same machine read `souls 0/500`, clamp a seeded 900 to `500/500`, keep the unnamed `max_progress` at 20, carry 500 in the menu's data slot, and store **5** souls in the first operation, where the untuned first launch stored 2 and capped at 1,350; `SELFTEST=config` asserts 1,350/2 on that tuned file and fails. Unit: `no_config_file_is_the_jars_defaults`, `the_config_file_reads_every_key`, `the_minimums_the_jar_declares_are_enforced`, `a_value_outside_its_range_is_clamped_not_refused`, `a_partial_or_broken_file_keeps_the_defaults`, `unknown_keys_are_ignored_and_both_spellings_are_read`, `the_written_file_parses_back_and_names_every_key`, and the five tuned-rule tests |
+| the two acceleration-branch keys (`acceleration_tick`, `entities_acceleration_tick`) and the client particle key | **accepted, not used** — the branches are `blocked(no-tick-another-block-entity)` / `blocked(no-entity-tick)` and the client half is not ported; the keys stay in the file so the surface matches the jar |
 
 ## 7. Gaps (issue-shaped, for the ledger)
 
@@ -747,6 +918,12 @@ Closed by 0.2.3: ~~waterlogging on the pipe and the surge is not ported~~ — bo
 it with a bucket (phase R). The interface-gated half (a flowing fluid, a dispenser) is
 `blocked(no-waterlogged-interface)` above.
 
+Closed by 0.2.5: ~~no config file~~ — the jar's twelve settings are read from
+`config/industrialforegoingsouls/config.json`, which the game writes with the jar's defaults when it
+is missing, once at load and again when it changes (§1.6, phase T). The three keys whose behaviour
+this pin cannot express (`acceleration_tick`, `entities_acceleration_tick`, `pipes_particles`) are
+accepted and kept rather than dropped.
+
 Closed by 0.2.4: ~~the augment slots have no screen~~ — the machine has a container of three slots
 and a menu type of its own, opened by a plain right-click, with a screen that draws the tank and the
 bar and data slots that carry them (phase S). The container also gave the machine a real inventory,
@@ -756,8 +933,13 @@ Still open:
 
 - **The screen has no texture and no arrow.** The parent's Titanium screen and its GUI texture are
   not this package's, and the jar carries none; the tank and the bar are printed as
-  `souls / 1350` and `progress / bar` over the engine's plain panel. A faithful redraw needs the
+  `souls / <tank>` and `progress / bar` over the engine's plain panel. A faithful redraw needs the
   parent's texture (a cross-package asset dependency this pin does not express).
+- **The screen's tank bar and progress arrow, drawn with `fill`/`quad`, is a named gap and is not
+  queued.** With `--offscreen` there is no pixel to read and `ctl` reads no screen text, so a bar
+  drawn as geometry would have no strict headless assertion — the numbers it would draw are already
+  asserted through the menu's data slots (phase S and phase T). It stays open until the harness can
+  read a screen's shapes, not because the drawing is unknown.
 - **The screen's labels are literal English.** `screen_draw` prints "catalyst", "augments" and the
   two counters without a translation key, so they are not in `lang/` (the title and "Inventory" are
   the engine's and are).
@@ -825,18 +1007,41 @@ The **0.2.4** rows of the same table (the menu-and-screen slice):
 | control + selftest ×8 | `GAME=$CONTROL_GAME`, `SELFTEST=1`, `screen`, `augment`, `laser`, `grow`, `carry`, `replace`, `waterlog` | `FAIL` + `EXIT:1` each, at the intended assertion | `…-e2e/e2e-launcher-control.log`, `…-selftest{,-screen,-augment,-laser,-grow,-carry,-replace,-waterlog}.log` |
 | log gate | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=17 ok=17 missing-exit=0 bad-exit=0` | — |
 
+The **0.2.5** rows of the same table (the config-file slice). The package, `check` and both `fits`
+runs are `BUILD_LOCAL=1` because the remote runner has no `cargo-horizon-mod`; `test` and the lints
+forwarded, and the local format was proven separately (§4.5):
+
+| step | command | result | log |
+|---|---|---|---|
+| red (the parser) | `cargo test`, the seven config rules at `todo!()` | **46 passed, 7 failed** (`not yet implemented: slice 0.2.5: parse the config file`) | `sdk-test-red-config.log` |
+| red (the rules) | `cargo test`, `&Settings` threaded but the bodies still on the constants | **55 passed, 5 failed** (the five tuned-rule tests) | `sdk-test-red-0.2.5.log` |
+| tests | `cargo test --locked --offline` | **60 passed, 0 failed** | `sdk-test.log` |
+| fmt + lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` (locally, after a remote `cargo fmt`) | `FMT-CLEAN`, `CLIPPY-EXIT:0` | `sdk-clippy-0.2.5.log` |
+| content | `python3 tools/assemble_content.py --check` | `CONTENT OK: 57 files` (the slice adds no content) | — |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` ×2, the SDK-generated lock stripped from each archive | `CMP-IDENTICAL`, sha256 `e73258cc…4157`, **121,782 B**, 65 entries, `PACKED-LOCK: 0` | `sdk-build-0.2.5.log` |
+| check | `cargo horizon-mod check industrialforegoingsouls.hmod` | `industrialforegoingsouls 0.2.5 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 121,782 B, sha256 `e73258cc…4157`, exit 0 | `sdk-check-0.2.5.log` |
+| fits (pin) | `… fits … --build 0a875da` | `0a875da  made for` | `sdk-fits-0.2.5.log` |
+| fits (other) | `… fits … --build 0b14f8a` | `0b14f8a  fits` (after the `Config` → `Settings` rename, §1.6) | `sdk-fits-0.2.5.log` |
+| package gate | `python3 ports/tools/verify-sdk-package.py industrialforegoingsouls` | **1/1** (60 tests, package = tree) | — |
+| launcher build | `tools/e2e-two-mod.sh build` | `Compiling industrialforegoing (1 of 2)`, **`Compiling industrialforegoingsouls (2 of 2)`**, `the build carries: industrialforegoing 0.2.11, industrialforegoingsouls 0.2.5` (`native-0a875da-893f7451dc2f`) | `industrialforegoingsouls/e2e-two-mod-build-0.2.5.log` |
+| in-game | `tools/e2e.sh` on that build (A–N, D2–D3, R, S, K–L, P–Q, M2, **T**) | **`PASS` + `EXIT:0`** | `…-e2e/e2e-launcher.log` |
+| control + selftest ×9 | `GAME=$CONTROL_GAME`, `SELFTEST=1`, `screen`, `augment`, `laser`, `grow`, `carry`, `replace`, `waterlog`, **`config`** | `FAIL` + `EXIT:1` each, at the intended assertion | `…-e2e/e2e-launcher-control.log`, `…-selftest{,-screen,-augment,-laser,-grow,-carry,-replace,-waterlog,-config}.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=18 ok=18 missing-exit=0 bad-exit=0` | — |
+
 ## 9. Files
 
 ```
 Cargo.toml, horizon-mod.toml, LICENSE, README.md, .gitignore
-industrialforegoingsouls.hmod     delivered package (111,572 B, sha256 79159d3f…a82b)
+industrialforegoingsouls.hmod     delivered package (121,782 B, sha256 e73258cc…4157)
 SLICE-PLAN-0.2.1.md               the first slice's plan (families, assertions, TDD order)
 SLICE-PLAN-0.2.2.md               the carrying slice's plan
 SLICE-PLAN-0.2.3.md               the waterlogging slice's plan (the pin's measurements, TDD order)
 SLICE-PLAN-0.2.4.md               the menu-and-screen slice's plan (the API check, TDD order)
+SLICE-PLAN-0.2.5.md               the config-file slice's plan (the jar's twelve keys, the file, TDD order)
 REVIEW-FIXES-0.2.2.md             the reviewer's four findings and how each is answered
 src/lib.rs                        the one impl Hooks + the three Parts + the menu, the screen and the break stash
-src/runtime.rs                    the pure economy, the network cache, the waterlogging and the menu rules, 46 tests
+src/config.rs                     config/industrialforegoingsouls/config.json: the value in force, read once
+src/runtime.rs                    the pure economy, its Settings, the network cache, the waterlogging and the menu rules, 60 tests
 assets/industrialforegoingsouls/  blockstates, models, item definitions, block textures, lang
 data/industrialforegoingsouls/    block declarations, the menu type, creative tab, loot, recipes, tags, advancements
 data/c/…, data/minecraft/tags/…   this port's declarations of the convention tags it needs
@@ -844,7 +1049,8 @@ tools/assemble_content.py         jar -> assets/data, re-spelled for 26.3 (`--ch
 tools/craft_recipe.py             the three recipes + the stand-in control, in a real table
 tools/parse_info.py               `/industrialforegoingsouls info` -> shell fields (with the menu's data slots)
 tools/parse_carry.py              a broken machine's `minecraft:block_entity_data` payload -> its tank and its `carried` stacks
-tools/e2e.sh                      the in-game scenario (A–R, D2–D3 the augment, S the menu, P the carried contents, Q the lens swap, R the waterlogging, M2 the parent laser)
+tools/e2e.sh                      the in-game scenario (A–R, D2–D3 the augment, S the menu, P the carried contents, Q the lens swap, R the waterlogging, M2 the parent laser, T the config file)
+tools/build-package.sh            the delivered package, built twice and compared, the SDK lock stripped
 tools/parse_laser.py              the parent machine's `/industrialforegoing info` parser (its own, copied)
 tools/e2e-two-mod.sh              builds the two-mod game (this port + its parent) and runs it
 notes.md, FINDINGS.md, VALIDATION.md

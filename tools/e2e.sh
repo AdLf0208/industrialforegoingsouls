@@ -50,6 +50,12 @@
 # that carries them. SELFTEST=replace inverts phase Q: a second lens must void the first one, which
 # must fail against a package that hands it back. SELFTEST=waterlog inverts phase R: the water bucket
 # must have left the pipe dry, which fails against a package whose click fills it.
+#
+# Phase T is 0.2.5's own leg: the package declares `config/industrialforegoingsouls/config.json`
+# (`register_configs`), so the game writes the jar's twelve defaults there at startup, and a second
+# launch — with the file replaced by `{"soul_storage": 500, "souls_per_operation": 5}` **before** it —
+# makes the same machine read `souls 5/500` where the untuned first launch read 2 out of 1,350.
+# SELFTEST=config asserts the untouched defaults on that tuned file, and must fail.
 set -Eeuo pipefail
 export LC_ALL=C
 [ -z "${IF_DEBUG:-}" ] || set -x
@@ -1232,4 +1238,91 @@ fi
 expect "this package's ore in the base's output" "$ORY" "minecraft:echo_shard x1"
 echo "  one base bar for the drill's 1,000 FE yielded $ORY"
 
-echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens out through the machine's menu freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand; the machine's own menu opens on a plain right-click with three slots (the catalyst and Titanium's two augment slots) and three data slots that carry the tank and the bar, the lens seated through slot 300 makes souls (a vanilla barrel's 27-slot chest menu is the differential), and a second efficiency addon is refused by the menu's slot rules and stays on the cursor; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE; and waterlogging is the state's: a fresh pipe reads waterlogged false, a water bucket fills it to true and leaves the empty bucket in the hand, the waterlogged pipe still pulls the laser base 50 -> 46 into a 4/4 network, an empty bucket drains it back to false and hands the water bucket over, a surge set to facing=north,waterlogged=true reads both properties back and still spends a soul on 300 ticks where a dry one reads false, and the laser base, which upstream does not waterlog, refuses the property by the game's own parser"
+echo "== T: the config file — the machines run the numbers in it (0.2.5) =="
+# The package declares `config/industrialforegoingsouls/config.json` (`register_configs`), so the
+# game writes the template at startup when the file is missing. The launch runs from this scratch
+# root, so the instance's config folder is beside the world, not under $HORIZON_HOME.
+CONFIG_FILE=$SCRATCH/config/industrialforegoingsouls/config.json
+[ -f "$CONFIG_FILE" ] || fail "the package did not have the game write $CONFIG_FILE"
+for key in soul_storage max_progress kill_warden damage_per_operation souls_per_operation \
+           soul_time acceleration_tick entities_acceleration_tick block_acceleration_tick \
+           random_tick_acceleration_chance soul_per_pipe pipes_particles; do
+    grep -q "\"$key\"" "$CONFIG_FILE" \
+        || fail "the written config names no $key: $(tr -d '\n' < "$CONFIG_FILE")"
+done
+grep -q '"soul_storage": 1350' "$CONFIG_FILE" || fail "the template is not the jar's tank"
+grep -q '"souls_per_operation": 2' "$CONFIG_FILE" || fail "the template is not the jar's yield"
+echo "  the game wrote the template: all twelve keys, soul_storage 1350, souls_per_operation 2"
+
+# The tuned file goes in **before** the launch that reads it. It names two keys and leaves the other
+# ten alone, so the partial-file rule is proven as well.
+mkdir -p "$(dirname "$CONFIG_FILE")"
+cat > "$CONFIG_FILE" <<'JSON'
+{
+  "soul_storage": 500,
+  "souls_per_operation": 5
+}
+JSON
+echo "  tuned file: $(tr -d ' \n' < "$CONFIG_FILE")"
+ctl quit >/dev/null 2>&1 || true
+sleep 3
+launch
+# Phase M2 left the world at `peaceful`, where a warden cannot be summoned ("Monsters cannot be
+# summoned in Peaceful difficulty"): the harvest this phase needs is a monster.
+ctl command "difficulty normal" >/dev/null
+ctl wait 4 >/dev/null
+arena
+WANT_CAP=500
+WANT_OP=5
+if [ "$SELFTEST" = config ]; then
+    echo "(selftest: asserting the untouched defaults, which a tuned file must not produce)"
+    WANT_CAP=1350
+    WANT_OP=2
+fi
+ctl command "execute in minecraft:the_end run setblock $BASE_POS industrialforegoingsouls:soul_laser_base" >/dev/null
+ctl wait 6 >/dev/null
+[ "$(block_name $BASE_POS)" = "industrialforegoingsouls:soul_laser_base" ] \
+    || fail "the laser base did not place after the tuned launch"
+summon_warden "$X0" 102 0
+ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
+ctl wait 8 >/dev/null
+ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the lens is not in the hotbar"
+aim_machine
+click_held "the lens on the machine"
+ctl wait 8 >/dev/null
+info $BASE_POS
+expect "the lens seated under the tuned config" "$LENS" "industrialforegoing:blue_laser_lens"
+case "$WARDEN" in
+    none) fail "no warden in the box under the tuned config (is the difficulty peaceful?)" ;;
+    *) ;;
+esac
+# The tank is the configured one: the `souls` command clamps to it, and the bar is still the default
+# twenty because the file did not name `max_progress`.
+say "industrialforegoingsouls souls $BASE_POS 900"
+ctl wait 10 >/dev/null
+info $BASE_POS
+expect "the tank's capacity, from the config in force" "$CAP" "$WANT_CAP"
+expect "the 900 souls the configured tank clamps to" "$SOULS" "$WANT_CAP"
+expect "the bar the partial file left at the default" "$PROGRESS_MAX" 20
+expect "the menu's data slot carrying the tank" "$MENU_SOULS" "$WANT_CAP"
+echo "  seeds 900: souls $SOULS/$CAP, bar $PROGRESS_MAX (the file named no max_progress)"
+# One operation's yield: empty the tank, then read it on the first tick it moves. The next operation
+# is twenty ticks away, so a read a couple of ticks later is exactly one operation's souls.
+say "industrialforegoingsouls souls $BASE_POS 0"
+ctl wait 4 >/dev/null
+FOUND=0
+SEEN=0
+for _ in $(seq 1 40); do
+    say "industrialforegoingsouls info $BASE_POS"
+    ctl wait 2 >/dev/null
+    INFO_LINE=$(ctl messages 6 | jq -r '.chat[]' | grep -m1 -E '^Soul Laser Base at' || true)
+    [ -n "$INFO_LINE" ] || continue
+    eval "$(python3 "$PORT/tools/parse_info.py" "$INFO_LINE")"
+    [ "${ok:-0}" = 1 ] || continue
+    if [ "$SOULS" -gt 0 ]; then FOUND=1; SEEN=$SOULS; break; fi
+done
+[ "$FOUND" = 1 ] || fail "80 ticks with a lens and a warden stored no souls"
+expect "the souls one operation stores, from the config in force" "$SEEN" "$WANT_OP"
+echo "  the first operation stored $SEEN souls (the file names souls_per_operation $WANT_OP)"
+
+echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens out through the machine's menu freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand; the machine's own menu opens on a plain right-click with three slots (the catalyst and Titanium's two augment slots) and three data slots that carry the tank and the bar, the lens seated through slot 300 makes souls (a vanilla barrel's 27-slot chest menu is the differential), and a second efficiency addon is refused by the menu's slot rules and stays on the cursor; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE; and waterlogging is the state's: a fresh pipe reads waterlogged false, a water bucket fills it to true and leaves the empty bucket in the hand, the waterlogged pipe still pulls the laser base 50 -> 46 into a 4/4 network, an empty bucket drains it back to false and hands the water bucket over, a surge set to facing=north,waterlogged=true reads both properties back and still spends a soul on 300 ticks where a dry one reads false, and the laser base, which upstream does not waterlog, refuses the property by the game's own parser; and the package's config file config/industrialforegoingsouls/config.json is written with the jar's twelve defaults when it is missing, and read once before the machines tick: with soul_storage 500 and souls_per_operation 5 in it the same machine reads souls 5/500 and stores 5 an operation where the untuned run reads 2 out of 1,350"

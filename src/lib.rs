@@ -43,6 +43,7 @@
 //! menu are also read and set through `/industrialforegoingsouls` — the precedent is
 //! `/powah info|set` and the parent port's own `/industrialforegoing info`. `info` is for everyone;
 //! `souls` and `wait` are operator commands, and `info` prints the menu's data slots.
+pub mod config;
 pub mod runtime;
 
 use std::collections::hash_map::DefaultHasher;
@@ -52,21 +53,23 @@ use std::sync::{Mutex, OnceLock};
 use mod_api::{
     BlockDropsEvent, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent, BlockEntityTicksEvent,
     BlockEntityTypeKey, BlockPart, BlockState, ClientHost, Command, CommandArgumentValue,
-    CommandInvocation, Compound, Direction, EntityRef, Flow, GameEventContext, Hand, Hooks, Host,
-    HostTransaction, Identifier, InteractionResult, ItemKey, ItemPart, ItemStack, LevelHost,
-    LevelRef, MenuContainer, MenuPart, MenuSlotRulesEvent, ModContainer, OnBlockPlacedByEvent,
-    OnDestroyedByPlayerEvent, RandomSource, RegisterCommandsEvent, Registrar, RegistrationContext,
+    CommandInvocation, Compound, ConfigKind, ConfigLoadingEvent, ConfigReloadingEvent, Direction,
+    EntityRef, Flow, GameEventContext, Hand, Hooks, Host, HostSide, HostTransaction, Identifier,
+    InteractionResult, ItemKey, ItemPart, ItemStack, LevelHost, LevelRef, MenuContainer, MenuPart,
+    MenuSlotRulesEvent, ModContainer, OnBlockPlacedByEvent, OnDestroyedByPlayerEvent, RandomSource,
+    RegisterCommandsEvent, RegisterConfigsEvent, Registrar, RegistrationContext,
     RunModCommandEvent, Screen, ScreenDrawEvent, ScreenEvent, ServerHost, SoundSource,
     StateForPlacementEvent, Tag, Text, UseItemOnEvent, UseWithoutItemEvent,
 };
 
 use crate::runtime::{
-    AUGMENT_SLOTS, Addon, LENS_SLOT, LaserBase, MAX_NETWORK_PIPES, MAX_PROGRESS, MENU, Network,
-    NetworkCache, SLOT_COUNT, SOUL_STORAGE, Surge, Target, Walked, WaterClick, Waterlogged,
-    adopted_items, augment_slot, grow_component, lens_fits, menu_data, pipe_pull, replacement_slot,
-    slot_accepts, water_click,
+    AUGMENT_SLOTS, Addon, LENS_SLOT, LaserBase, MAX_NETWORK_PIPES, MENU, Network, NetworkCache,
+    SLOT_COUNT, Surge, Target, Walked, WaterClick, Waterlogged, adopted_items, augment_slot,
+    grow_component, lens_fits, menu_data, pipe_pull, replacement_slot, slot_accepts, water_click,
 };
 
+/// This mod's id: the manifest's, the config file's folder and the command root.
+const MOD_ID: &str = "industrialforegoingsouls";
 /// The mod's three blocks.
 const BASE: &str = "industrialforegoingsouls:soul_laser_base";
 const PIPE: &str = "industrialforegoingsouls:soul_network_pipe";
@@ -200,6 +203,33 @@ impl Hooks for Mod {
         );
     }
 
+    /// Declare `config/industrialforegoingsouls/config.json` as this mod's config, of the kind the
+    /// jar's own file is (Titanium's `@ConfigFile` with no type is a **common** config: one file per
+    /// instance, read once when the game starts). The game writes `default` there when the file is
+    /// missing, so a server owner finds the keys instead of guessing them.
+    fn register_configs(&self, _host: HostSide, event: &mut RegisterConfigsEvent<'_>) {
+        let default = runtime::format_config(&runtime::Settings::DEFAULT);
+        event.configs.push(
+            mod_api::Config::new(MOD_ID, ConfigKind::Common, &default).file(config::CONFIG_FILE),
+        );
+    }
+
+    /// The game read a config. Every mod hears every config, so the id is checked; the text is
+    /// parsed **once**, here, before any world (and therefore any block entity tick) exists.
+    fn config_loading(&self, _host: HostSide, event: &mut ConfigLoadingEvent<'_>) {
+        if event.config.mod_id == MOD_ID {
+            config::loaded(&event.config.text);
+        }
+    }
+
+    /// The file changed on disk and the game read it again: the new values are in force from the
+    /// next tick, with no per-tick file read anywhere.
+    fn config_reloading(&self, _host: HostSide, event: &mut ConfigReloadingEvent<'_>) {
+        if event.config.mod_id == MOD_ID {
+            config::loaded(&event.config.text);
+        }
+    }
+
     /// A broken machine's own item carries what the machine held — the tank and bar, the seated
     /// lens and augment, a pipe's souls, a surge's bought ticks — so placing it puts them back.
     ///
@@ -239,7 +269,7 @@ impl Hooks for Mod {
         } else {
             None
         };
-        let Some(patch) = carried_patch(machine, &saved, carried) else {
+        let Some(patch) = carried_patch(machine, &saved, carried, &config::current()) else {
             return Flow::Continue;
         };
         let Some(item) = machine.item() else {
@@ -503,17 +533,19 @@ impl BlockEntityPart for Laser {
             .iter()
             .filter_map(|slot| event.entity.items[*slot].as_ref())
             .find_map(|stack| efficiency_of(&augment_component(&*host, stack)?));
+        let cfg = config::current();
         let mut base = LaserBase::from_saved(
+            &cfg,
             read_int(&saved, KEY_SOULS),
             read_progress(&saved),
             read_bar(&saved),
         );
         let warden = warden_near(host, level, event.pos);
         let health = warden.and_then(|entity| living_health(&*host, entity));
-        if base.tick(lens, health, efficiency)
+        if base.tick(&cfg, lens, health, efficiency)
             && let Some(entity) = warden
         {
-            let _ = entity.hurt(host, GENERIC, runtime::DAMAGE_PER_OPERATION, None, None);
+            let _ = entity.hurt(host, GENERIC, cfg.damage_per_operation, None, None);
         }
         if read_int(&saved, KEY_SOULS) != i32::try_from(base.souls).unwrap_or(i32::MAX) {
             write_int(
@@ -522,9 +554,7 @@ impl BlockEntityPart for Laser {
                 i32::try_from(base.souls).unwrap_or(0),
             );
         }
-        if read_progress(&saved)
-            != Some(i32::try_from(base.progress).unwrap_or(MAX_PROGRESS as i32))
-        {
+        if read_progress(&saved) != Some(i32::try_from(base.progress).unwrap_or(i32::MAX)) {
             write_int(
                 &mut saved,
                 KEY_PROGRESS,
@@ -558,7 +588,7 @@ impl BlockEntityPart for Laser {
         let progress = event.data.get(1).copied().unwrap_or(0);
         let bar = event.data.get(2).copied().unwrap_or(0);
         let [x, y] = event.origin;
-        let tank = format!("{souls} / {SOUL_STORAGE} souls");
+        let tank = format!("{souls} / {} souls", config::current().soul_storage);
         let cycle = format!("{progress} / {bar}");
         event
             .draw
@@ -845,6 +875,7 @@ impl BlockEntityPart for Pipe {
             return;
         };
         let own = read_int(&event.entity.nbt, KEY_SOULS).max(0) as u32;
+        let cfg = config::current();
         let Some((_, changed)) =
             with_pipe_network(host, level, event.pos, own, |host, level, network| {
                 for direction in Direction::ALL {
@@ -860,7 +891,7 @@ impl BlockEntityPart for Pipe {
                     let Some(offered) = handler_souls(host, level, target) else {
                         continue;
                     };
-                    let taken = pipe_pull(offered, network);
+                    let taken = pipe_pull(&cfg, offered, network);
                     if taken > 0 && !drain_handler(host, level, target, taken) {
                         // The handler refused the write: put the souls back so nothing is
                         // duplicated by a failed drain.
@@ -938,6 +969,7 @@ impl BlockEntityPart for SurgePart {
             return;
         }
         let saved = event.entity.nbt.clone();
+        let cfg = config::current();
         let mut surge = Surge::from_saved(read_int(&saved, KEY_WAIT));
         let facing = level
             .block_property(&*host, event.pos, FACING)
@@ -958,7 +990,7 @@ impl BlockEntityPart for SurgePart {
         let roll = level
             .with_random(host, |random| random.next_double())
             .unwrap_or(1.0);
-        let step = surge.tick(&mut network, target, roll);
+        let step = surge.tick(&cfg, &mut network, target, roll);
         if let Some(pos) = target_pos {
             for _ in 0..step.random_ticks {
                 if !level.block_random_tick(host, pos) {
@@ -1100,8 +1132,9 @@ fn walk(
     origin: [i32; 3],
     own: Option<([i32; 3], u32)>,
 ) -> (Vec<[i32; 3]>, Network) {
+    let cfg = config::current();
     let Some(pipe) = host.block_key(PIPE) else {
-        return (Vec::new(), Network::new([]));
+        return (Vec::new(), Network::new(&cfg, []));
     };
     let (seeds, seated) = match own {
         Some((pos, amount)) => (vec![pos], Some((pos, amount))),
@@ -1122,7 +1155,7 @@ fn walk(
         }
     };
     if seeds.is_empty() {
-        return (Vec::new(), Network::new([]));
+        return (Vec::new(), Network::new(&cfg, []));
     }
     let mut is_pipe = |pos: [i32; 3]| level.block(host, pos) == Some(pipe);
     let positions = grow_component(seeds, MAX_NETWORK_PIPES, &mut is_pipe);
@@ -1130,11 +1163,11 @@ fn walk(
         .iter()
         .map(|pos| pipe_souls(host, level, *pos))
         .collect();
-    let mut network = Network::new(souls);
+    let mut network = Network::new(&cfg, souls);
     if let Some((pos, amount)) = seated
         && let Some(index) = positions.iter().position(|position| *position == pos)
     {
-        network.set(index, amount);
+        network.set(&cfg, index, amount);
     }
     (positions, network)
 }
@@ -1168,13 +1201,13 @@ fn with_pipe_network<R>(
             .iter()
             .map(|target| pipe_souls(host, level, *target))
             .collect();
-        cache.insert(Walked::new(positions, souls));
+        cache.insert(Walked::new(&config::current(), positions, souls));
     }
     let before = cache.component(pos)?.network().pipes().to_vec();
     let mut changed: Moved = Vec::new();
     let result = {
         let walked = cache.component_mut(pos)?;
-        walked.set_souls(pos, own);
+        walked.set_souls(&config::current(), pos, own);
         let result = f(host, level, walked.network_mut());
         for (index, (position, souls)) in walked
             .positions()
@@ -1189,7 +1222,7 @@ fn with_pipe_network<R>(
         result
     };
     for (position, souls) in &changed {
-        cache.set_souls(*position, *souls);
+        cache.set_souls(&config::current(), *position, *souls);
     }
     Some((result, changed))
 }
@@ -1212,7 +1245,7 @@ fn forget_networks() {
 fn cache_set(pos: [i32; 3], souls: u32) {
     let mut guard = WALKS.lock().expect("the network cache lock is poisoned");
     if let Some(cache) = guard.as_mut() {
-        cache.set_souls(pos, souls);
+        cache.set_souls(&config::current(), pos, souls);
     }
 }
 
@@ -1396,7 +1429,7 @@ impl ItemPart for SoulMachineItem {
         let Some(machine) = Machine::of_kind(kind) else {
             return;
         };
-        let Some(patch) = restore_patch(machine, &payload) else {
+        let Some(patch) = restore_patch(machine, &payload, &config::current()) else {
             return;
         };
         // The numbers and the container's stacks go back together: a placement that fails to seat
@@ -1488,9 +1521,11 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
     let (Some(data), Some(_)) = (data, kind) else {
         return format!("{pos:?} is not an industrialforegoingsouls block., t={time}");
     };
+    let cfg = config::current();
     match kind {
         Some(kind) if Some(kind) == BASE_KIND.get().copied() => {
             let base = LaserBase::from_saved(
+                &cfg,
                 read_int(&data, KEY_SOULS),
                 read_progress(&data),
                 read_bar(&data),
@@ -1518,8 +1553,8 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
                 None => "none".to_owned(),
             };
             format!(
-                "Soul Laser Base at {pos:?}: souls {}/{SOUL_STORAGE}, progress {}/{}, lens {lens}, augments efficiency {efficiency:.2}, menu {menu:?}, warden {warden}, t={time}",
-                base.souls, base.progress, base.bar
+                "Soul Laser Base at {pos:?}: souls {}/{}, progress {}/{}, lens {lens}, augments efficiency {efficiency:.2}, menu {menu:?}, warden {warden}, t={time}",
+                base.souls, cfg.soul_storage, base.progress, base.bar
             )
         }
         Some(kind) if Some(kind) == PIPE_KIND.get().copied() => {
@@ -1533,7 +1568,7 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
             format!(
                 "Soul Pipe at {pos:?}: network {}/{}, waterlogged {}, t={time}",
                 network.total(),
-                network.capacity(),
+                network.capacity(&cfg),
                 water.property()
             )
         }
@@ -1546,9 +1581,9 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
             format!(
                 "Soul Surge at {pos:?}: network {}/{}, wait {}/{}, facing {facing}, waterlogged {}, powered {powered}, t={time}",
                 network.total(),
-                network.capacity(),
+                network.capacity(&cfg),
                 surge.ticking_time,
-                runtime::SOUL_TIME,
+                cfg.soul_time,
                 water.property()
             )
         }
@@ -1566,16 +1601,19 @@ fn set_souls(host: &mut dyn ServerHost, pos: [i32; 3], amount: i32) -> String {
     let Some(level) = host.level(host.dimension()) else {
         return format!("{pos:?}: no such level.");
     };
+    let cfg = config::current();
     if Some(kind) == BASE_KIND.get().copied() {
         let Some(entity) = host.block_entity(level, pos) else {
             return format!("{pos:?}: no block entity.");
         };
         let mut patch = Compound::new();
-        write_int(&mut patch, KEY_SOULS, amount.min(SOUL_STORAGE as i32));
+        let clamped = amount.min(i32::try_from(cfg.soul_storage).unwrap_or(i32::MAX));
+        write_int(&mut patch, KEY_SOULS, clamped);
         return match entity.merge_data(host, patch) {
             Ok(true) => format!(
-                "Soul Laser Base at {pos:?}: souls {}/{SOUL_STORAGE}.",
-                amount.min(SOUL_STORAGE as i32)
+                "Soul Laser Base at {pos:?}: souls {}/{cap}.",
+                clamped,
+                cap = cfg.soul_storage
             ),
             _ => format!("{pos:?}: the write did not land."),
         };
@@ -1588,12 +1626,12 @@ fn set_souls(host: &mut dyn ServerHost, pos: [i32; 3], amount: i32) -> String {
         None
     };
     let (pipes, mut network) = walk(host, level, pos, own);
-    let accepted = network.add(u32::try_from(amount.max(0)).unwrap_or(u32::MAX));
+    let accepted = network.add(&cfg, u32::try_from(amount.max(0)).unwrap_or(u32::MAX));
     if accepted == 0 {
         return format!(
             "{pos:?}: the network holds {}/{} souls.",
             network.total(),
-            network.capacity()
+            network.capacity(&cfg)
         );
     }
     let mut scratch = Compound::new();
@@ -1601,7 +1639,7 @@ fn set_souls(host: &mut dyn ServerHost, pos: [i32; 3], amount: i32) -> String {
     format!(
         "network at {pos:?}: {}/{} souls.",
         network.total(),
-        network.capacity()
+        network.capacity(&cfg)
     )
 }
 
@@ -1625,7 +1663,7 @@ fn set_wait(host: &mut dyn ServerHost, pos: [i32; 3], ticks: i32) -> String {
         Ok(true) => format!(
             "Soul Surge at {pos:?}: wait {}/{}.",
             ticks,
-            runtime::SOUL_TIME
+            config::current().soul_time
         ),
         _ => format!("{pos:?}: the write did not land."),
     }
@@ -1807,11 +1845,13 @@ fn carried_patch(
     machine: Machine,
     saved: &Compound,
     carried: Option<Vec<Tag>>,
+    cfg: &runtime::Settings,
 ) -> Option<Compound> {
     let mut payload = Compound::new();
     match machine {
         Machine::Base => {
             let base = LaserBase::from_saved(
+                cfg,
                 read_int(saved, KEY_SOULS),
                 read_progress(saved),
                 read_bar(saved),
@@ -1847,7 +1887,7 @@ fn carried_patch(
             write_int(
                 &mut payload,
                 KEY_SOULS,
-                souls.min(i32::try_from(runtime::SOUL_PER_PIPE).unwrap_or(i32::MAX)),
+                souls.min(i32::try_from(cfg.soul_per_pipe).unwrap_or(i32::MAX)),
             );
         }
         Machine::Surge => {
@@ -1858,7 +1898,7 @@ fn carried_patch(
             write_int(
                 &mut payload,
                 KEY_WAIT,
-                wait.min(i32::try_from(runtime::SOUL_TIME).unwrap_or(i32::MAX)),
+                wait.min(i32::try_from(cfg.soul_time).unwrap_or(i32::MAX)),
             );
         }
     }
@@ -1902,7 +1942,11 @@ fn carried_items(host: &dyn Host, payload: &Compound) -> Vec<(u32, ItemStack)> {
 /// capacities — a payload hand-written by `/data merge` or carried by another version may hold
 /// anything, exactly as upstream's components clamp when they load. `None` when the payload does
 /// not name this machine, so a base's payload never reaches a pipe's block entity.
-fn restore_patch(machine: Machine, payload: &Compound) -> Option<Compound> {
+fn restore_patch(
+    machine: Machine,
+    payload: &Compound,
+    cfg: &runtime::Settings,
+) -> Option<Compound> {
     if payload_id(payload).as_deref() != Some(machine.block()) {
         return None;
     }
@@ -1910,6 +1954,7 @@ fn restore_patch(machine: Machine, payload: &Compound) -> Option<Compound> {
     match machine {
         Machine::Base => {
             let base = LaserBase::from_saved(
+                cfg,
                 read_int(payload, KEY_SOULS),
                 read_progress(payload),
                 read_bar(payload),
@@ -1935,14 +1980,14 @@ fn restore_patch(machine: Machine, payload: &Compound) -> Option<Compound> {
             KEY_SOULS,
             read_int(payload, KEY_SOULS)
                 .max(0)
-                .min(i32::try_from(runtime::SOUL_PER_PIPE).unwrap_or(i32::MAX)),
+                .min(i32::try_from(cfg.soul_per_pipe).unwrap_or(i32::MAX)),
         ),
         Machine::Surge => write_int(
             &mut patch,
             KEY_WAIT,
             read_int(payload, KEY_WAIT)
                 .max(0)
-                .min(i32::try_from(runtime::SOUL_TIME).unwrap_or(i32::MAX)),
+                .min(i32::try_from(cfg.soul_time).unwrap_or(i32::MAX)),
         ),
     }
     Some(patch)
@@ -1959,6 +2004,9 @@ fn payload_id(payload: &Compound) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The config a game with no file runs: the jar's defaults.
+    const CFG: runtime::Settings = runtime::Settings::DEFAULT;
 
     /// A base snapshot as the break sees it, with the snapshot's own noise beside it (the
     /// coordinates, the pack flags and a stored `Items` list a mod block entity may keep).
@@ -2001,8 +2049,13 @@ mod tests {
     /// **fresh** payload of the keys this package owns — not the pre-removal snapshot.
     #[test]
     fn a_machine_s_item_carries_its_contents() {
-        let patch = carried_patch(Machine::Base, &a_base_with_contents(), Some(a_stash()))
-            .expect("a machine with a lens, an augment and souls has something to carry");
+        let patch = carried_patch(
+            Machine::Base,
+            &a_base_with_contents(),
+            Some(a_stash()),
+            &CFG,
+        )
+        .expect("a machine with a lens, an augment and souls has something to carry");
         let payload = payload_of(&patch);
         assert_eq!(
             payload_id(&payload).as_deref(),
@@ -2041,13 +2094,13 @@ mod tests {
         write_int(&mut empty, KEY_SOULS, 0);
         write_int(&mut empty, KEY_PROGRESS, 20);
         write_int(&mut empty, KEY_BAR, 20);
-        assert_eq!(carried_patch(Machine::Base, &empty, None), None);
+        assert_eq!(carried_patch(Machine::Base, &empty, None, &CFG), None);
         let mut pipe = Compound::new();
         write_int(&mut pipe, KEY_SOULS, 0);
-        assert_eq!(carried_patch(Machine::Pipe, &pipe, None), None);
+        assert_eq!(carried_patch(Machine::Pipe, &pipe, None, &CFG), None);
         let mut surge = Compound::new();
         write_int(&mut surge, KEY_WAIT, 0);
-        assert_eq!(carried_patch(Machine::Surge, &surge, None), None);
+        assert_eq!(carried_patch(Machine::Surge, &surge, None, &CFG), None);
     }
 
     /// A pipe's own souls and a surge's bought ticks travel too.
@@ -2055,15 +2108,17 @@ mod tests {
     fn a_pipe_carries_its_souls_and_a_surge_its_ticks() {
         let mut pipe = Compound::new();
         write_int(&mut pipe, KEY_SOULS, 3);
-        let payload =
-            payload_of(&carried_patch(Machine::Pipe, &pipe, None).expect("three souls travel"));
+        let payload = payload_of(
+            &carried_patch(Machine::Pipe, &pipe, None, &CFG).expect("three souls travel"),
+        );
         assert_eq!(payload_id(&payload).as_deref(), Some(PIPE));
         assert_eq!(read_int(&payload, KEY_SOULS), 3);
 
         let mut surge = Compound::new();
         write_int(&mut surge, KEY_WAIT, 120);
-        let payload =
-            payload_of(&carried_patch(Machine::Surge, &surge, None).expect("its ticks travel"));
+        let payload = payload_of(
+            &carried_patch(Machine::Surge, &surge, None, &CFG).expect("its ticks travel"),
+        );
         assert_eq!(payload_id(&payload).as_deref(), Some(SURGE));
         assert_eq!(read_int(&payload, KEY_WAIT), 120);
     }
@@ -2077,14 +2132,15 @@ mod tests {
         write_int(&mut payload, KEY_SOULS, 99_999);
         write_int(&mut payload, KEY_PROGRESS, 500);
         write_int(&mut payload, KEY_BAR, 0);
-        let patch = restore_patch(Machine::Base, &payload).expect("a base payload restores");
+        let patch = restore_patch(Machine::Base, &payload, &CFG).expect("a base payload restores");
         let base = LaserBase::from_saved(
+            &CFG,
             read_int(&patch, KEY_SOULS),
             read_progress(&patch),
             read_bar(&patch),
         );
-        assert_eq!(base.souls, SOUL_STORAGE, "the tank stops at 1,350");
-        assert_eq!(base.bar, MAX_PROGRESS, "a zero bar is no bar");
+        assert_eq!(base.souls, CFG.soul_storage, "the tank stops at 1,350");
+        assert_eq!(base.bar, CFG.max_progress, "a zero bar is no bar");
         assert_eq!(
             base.progress, base.bar,
             "a position past the bar is the bar"
@@ -2093,7 +2149,7 @@ mod tests {
         let mut pipe = Compound::new();
         pipe.insert("id".into(), Tag::String(PIPE.into()));
         write_int(&mut pipe, KEY_SOULS, 99);
-        let patch = restore_patch(Machine::Pipe, &pipe).expect("a pipe payload restores");
+        let patch = restore_patch(Machine::Pipe, &pipe, &CFG).expect("a pipe payload restores");
         assert_eq!(
             read_int(&patch, KEY_SOULS),
             i32::try_from(runtime::SOUL_PER_PIPE).unwrap_or(4),
@@ -2103,7 +2159,7 @@ mod tests {
         let mut surge = Compound::new();
         surge.insert("id".into(), Tag::String(SURGE.into()));
         write_int(&mut surge, KEY_WAIT, 9_999);
-        let patch = restore_patch(Machine::Surge, &surge).expect("a surge payload restores");
+        let patch = restore_patch(Machine::Surge, &surge, &CFG).expect("a surge payload restores");
         assert_eq!(
             read_int(&patch, KEY_WAIT),
             i32::try_from(runtime::SOUL_TIME).unwrap_or(300),
@@ -2117,13 +2173,13 @@ mod tests {
         let mut payload = Compound::new();
         payload.insert("id".into(), Tag::String(BASE.into()));
         write_int(&mut payload, KEY_SOULS, 5);
-        assert!(restore_patch(Machine::Base, &payload).is_some());
-        assert_eq!(restore_patch(Machine::Pipe, &payload), None);
-        assert_eq!(restore_patch(Machine::Surge, &payload), None);
+        assert!(restore_patch(Machine::Base, &payload, &CFG).is_some());
+        assert_eq!(restore_patch(Machine::Pipe, &payload, &CFG), None);
+        assert_eq!(restore_patch(Machine::Surge, &payload, &CFG), None);
 
         let mut untyped = Compound::new();
         write_int(&mut untyped, KEY_SOULS, 5);
-        assert_eq!(restore_patch(Machine::Base, &untyped), None);
+        assert_eq!(restore_patch(Machine::Base, &untyped, &CFG), None);
     }
 
     /// A payload's `carried` list is the container's stacks: positionally, one item a slot, and a
