@@ -279,7 +279,19 @@ def build() -> dict[str, bytes]:
 
     put(
         f"data/{MOD}/tags/block/soul_connects.json",
-        {"values": [f"{MOD}:soul_network_pipe", f"{MOD}:soul_surge"]},
+        {
+            # `SoulPipeBlock.connectsTo`: a `SoulPipeBlock`/`SoulSurgeBlock` side is `pipe`, and a
+            # network connection or a **soul handler** side is `block` — both join. This pin builds
+            # the pipe's shape from a `chorus_plant` template, so both collapse to one boolean a side
+            # (notes.md §3 item 5) and the tag is what the engine reads. The laser base is the mod's
+            # only soul handler (`SLBSoulCap` is implemented by no other class): without it here the
+            # machine half of `connectsTo` was not carried at all (0.2.6).
+            "values": [
+                f"{MOD}:soul_laser_base",
+                f"{MOD}:soul_network_pipe",
+                f"{MOD}:soul_surge",
+            ],
+        },
     )
     put(f"data/{MOD}/tags/block/cant_accelerate.json", {"values": [f"{MOD}:soul_surge"]})
     put(f"data/c/tags/block/tick_acceleration_disallowed.json", {"values": [f"{MOD}:soul_surge"]})

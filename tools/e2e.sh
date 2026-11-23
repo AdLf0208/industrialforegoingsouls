@@ -28,6 +28,14 @@
 # beside it (27 chest slots the same click opens), and `SELFTEST=screen` asserts the base opens **no**
 # menu, which must fail against this package.
 #
+# Phase J proves the Soul Pipe's **shape and joins** (0.2.6): upstream's `SoulPipeBlock.connectsTo`
+# joins a `SoulPipeBlock`/`SoulSurgeBlock` (its `pipe` state) and a soul handler (its `block` state),
+# and this pin builds the shape from a `chorus_plant` template plus the
+# `#industrialforegoingsouls:soul_connects` tag. One pipe reads `north=true, east=true` with a laser
+# base north and a pipe east and `false` on the other four sides, the same pipe's north side next to
+# `minecraft:stone` reads `north=false` (the differential), and the base's own state carries no pipe
+# property. `SELFTEST=joins` asserts that north side is `false`, and must fail.
+#
 # The package is one flat `.hmod` (code and content together), so the game must be one the launcher
 # built with it — no `--dev-mod`:
 #
@@ -56,6 +64,9 @@
 # launch — with the file replaced by `{"soul_storage": 500, "souls_per_operation": 5}` **before** it —
 # makes the same machine read `souls 5/500` where the untuned first launch read 2 out of 1,350.
 # SELFTEST=config asserts the untouched defaults on that tuned file, and must fail.
+#
+# SELFTEST=joins is 0.2.6's own: phase J's pipe beside the laser base must read `north=false`, which
+# fails against a package whose `soul_connects` tag names the soul handler.
 set -Eeuo pipefail
 export LC_ALL=C
 [ -z "${IF_DEBUG:-}" ] || set -x
@@ -622,6 +633,78 @@ expect "the two-pipe network" "$NETWORK" 8
 info $BASE_POS
 expect "the machine after the second pipe pulled" "$SOULS" 42
 echo "  the machine at $PIPE_SOULS souls after one pipe, 42 after two; the network 4/4 then 8/8"
+
+echo "== J: the pipe joins a pipe and a soul handler, and not a plain block (0.2.6) =="
+# Upstream's `SoulPipeBlock.connectsTo` gives a side the `pipe` state next to a `SoulPipeBlock` or a
+# `SoulSurgeBlock`, and the `block` state next to a network connection or a soul handler
+# (FINDINGS.md). 26.3 builds a pipe's shape itself, from a `chorus_plant` template plus
+# `connects_to` -> `#industrialforegoingsouls:soul_connects`, so the two joined states collapse to
+# one boolean a side (notes.md §3 item 5) — but **both** must still join, and the laser base is this
+# mod's only soul handler.
+JX=196
+JZ=-6
+# The differential on the same pipe: plain stone on the north side joins nothing; a pipe on the east
+# side joins. The arena floor is stone as well, so a `down` join would show if the tag were too wide.
+ctl command "execute in minecraft:the_end run setblock $JX 101 $JZ industrialforegoingsouls:soul_network_pipe" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $((JX + 1)) 101 $JZ industrialforegoingsouls:soul_network_pipe" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $JX 101 $((JZ - 1)) minecraft:stone" >/dev/null
+ctl wait 12 >/dev/null
+expect "the probe pipe's block" "$(block_name $JX 101 $JZ)" "industrialforegoingsouls:soul_network_pipe"
+expect "the pipe's north side next to stone" "$(block_prop $JX 101 $JZ north)" false
+expect "the pipe's east side next to a pipe" "$(block_prop $JX 101 $JZ east)" true
+for prop in south west up down; do
+    expect "the pipe's $prop side (open air, or stone the tag does not name)" \
+        "$(block_prop $JX 101 $JZ "$prop")" false
+done
+echo "  beside a pipe: east=true; beside stone: north=false, and south/west/up/down=false"
+echo "  the probe pipe's state, read back: $(ctl block $JX 101 $JZ | jq -r '.state')"
+# The same pipe, its north neighbour replaced by the laser base: the neighbour change has to give
+# that side the join upstream's `connectsTo` gives a soul handler.
+ctl command "execute in minecraft:the_end run setblock $JX 101 $((JZ - 1)) industrialforegoingsouls:soul_laser_base" >/dev/null
+ctl wait 12 >/dev/null
+expect "the laser base north of the probe pipe" "$(block_name $JX 101 $((JZ - 1)))" \
+    "industrialforegoingsouls:soul_laser_base"
+expect "the pipe's north side next to the soul handler" "$(block_prop $JX 101 $JZ north)" true
+if [ "$SELFTEST" = joins ]; then
+    echo "(selftest: asserting the pipe does not join the laser base)"
+    expect "selftest: the pipe's north side next to the soul handler" \
+        "$(block_prop $JX 101 $JZ north)" false
+fi
+expect "the pipe's east side still a pipe" "$(block_prop $JX 101 $JZ east)" true
+for prop in south west up down; do
+    expect "the pipe's $prop side after the base joined" "$(block_prop $JX 101 $JZ "$prop")" false
+done
+# The join belongs to the pipe, not to the handler: upstream's `block` state is drawn on the pipe,
+# and the laser base's own state has no pipe property declared at all.
+BASE_STATE=$(ctl block $JX 101 $((JZ - 1)) | jq -r '.state // ""')
+case "$BASE_STATE" in
+    *north=*|*east=*|*south=*|*west=*|*up=*|*down=*)
+        fail "the laser base's own state carries a pipe property: $BASE_STATE" ;;
+    *) ;;
+esac
+echo "  the pipe beside the base: north=true, east=true; the base's own state: '${BASE_STATE:-none}'"
+echo "  the joined pipe's state, read back: $(ctl block $JX 101 $JZ | jq -r '.state')"
+# The other path a join comes from: a pipe *placed* beside a base already in the world (the case
+# above ran through the neighbour's shape update, this one through `pipe_with_connections`).
+PX=200
+PZ=-6
+ctl command "execute in minecraft:the_end run setblock $PX 101 $((PZ - 1)) industrialforegoingsouls:soul_laser_base" >/dev/null
+ctl wait 8 >/dev/null
+ctl command "execute in minecraft:the_end run setblock $PX 101 $PZ industrialforegoingsouls:soul_network_pipe" >/dev/null
+ctl wait 12 >/dev/null
+expect "the pipe placed beside an existing laser base" "$(block_prop $PX 101 $PZ north)" true
+# And upstream's second joined block: a `SoulSurgeBlock` takes the `pipe` state, the same join.
+SX=204
+SZ=-6
+ctl command "execute in minecraft:the_end run setblock $SX 101 $((SZ - 1)) industrialforegoingsouls:soul_surge" >/dev/null
+ctl wait 8 >/dev/null
+ctl command "execute in minecraft:the_end run setblock $SX 101 $SZ industrialforegoingsouls:soul_network_pipe" >/dev/null
+ctl wait 12 >/dev/null
+expect "the pipe placed beside a surge" "$(block_prop $SX 101 $SZ north)" true
+echo "  a pipe placed beside a base or a surge joins that side too"
+# The probe pieces are not part of any other phase: clear them, so a later count cannot see them.
+ctl command "execute in minecraft:the_end run fill 194 101 -8 206 101 -5 minecraft:air" >/dev/null
+ctl wait 6 >/dev/null
 
 echo "== F: a placed surge takes its facing from the clicked face =="
 # A full block under the click, so the ray hits a shape the harness can name: the surge goes on its
@@ -1325,4 +1408,4 @@ done
 expect "the souls one operation stores, from the config in force" "$SEEN" "$WANT_OP"
 echo "  the first operation stored $SEEN souls (the file names souls_per_operation $WANT_OP)"
 
-echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens out through the machine's menu freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand; the machine's own menu opens on a plain right-click with three slots (the catalyst and Titanium's two augment slots) and three data slots that carry the tank and the bar, the lens seated through slot 300 makes souls (a vanilla barrel's 27-slot chest menu is the differential), and a second efficiency addon is refused by the menu's slot rules and stays on the cursor; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE; and waterlogging is the state's: a fresh pipe reads waterlogged false, a water bucket fills it to true and leaves the empty bucket in the hand, the waterlogged pipe still pulls the laser base 50 -> 46 into a 4/4 network, an empty bucket drains it back to false and hands the water bucket over, a surge set to facing=north,waterlogged=true reads both properties back and still spends a soul on 300 ticks where a dry one reads false, and the laser base, which upstream does not waterlog, refuses the property by the game's own parser; and the package's config file config/industrialforegoingsouls/config.json is written with the jar's twelve defaults when it is missing, and read once before the machines tick: with soul_storage 500 and souls_per_operation 5 in it the same machine reads souls 5/500 and stores 5 an operation where the untuned run reads 2 out of 1,350"
+echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens out through the machine's menu freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand; the machine's own menu opens on a plain right-click with three slots (the catalyst and Titanium's two augment slots) and three data slots that carry the tank and the bar, the lens seated through slot 300 makes souls (a vanilla barrel's 27-slot chest menu is the differential), and a second efficiency addon is refused by the menu's slot rules and stays on the cursor; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two), and its shape joins the side of a pipe and the side of a laser base (a soul handler) where plain stone on the same side joins nothing, with the base's own state carrying no pipe property; the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE; and waterlogging is the state's: a fresh pipe reads waterlogged false, a water bucket fills it to true and leaves the empty bucket in the hand, the waterlogged pipe still pulls the laser base 50 -> 46 into a 4/4 network, an empty bucket drains it back to false and hands the water bucket over, a surge set to facing=north,waterlogged=true reads both properties back and still spends a soul on 300 ticks where a dry one reads false, and the laser base, which upstream does not waterlog, refuses the property by the game's own parser; and the package's config file config/industrialforegoingsouls/config.json is written with the jar's twelve defaults when it is missing, and read once before the machines tick: with soul_storage 500 and souls_per_operation 5 in it the same machine reads souls 5/500 and stores 5 an operation where the untuned run reads 2 out of 1,350"

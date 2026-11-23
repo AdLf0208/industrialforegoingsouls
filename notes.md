@@ -1,4 +1,4 @@
-# `industrialforegoingsouls` — Industrial Foregoing: Souls 0.2.5
+# `industrialforegoingsouls` — Industrial Foregoing: Souls 0.2.6
 
 The three blocks that are one soul economy, ported from **Industrial Foregoing: Souls 1.21.1-1.10.7**
 into Rust for Horizon 26.3 at the campaign pin.
@@ -10,8 +10,10 @@ into Rust for Horizon 26.3 at the campaign pin.
 | approach (`horizon/docs/modpacks.md`) | **agent port** of the behaviour, with the jar's content carried (models, blockstates, textures, recipes, loot, tags) |
 | pin | Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0` |
 | upstream | `InnovativeOnlineIndustries/Industrial-Foregoing-Souls`, commit `bf736d2f1140da25747ab97d8c160b44d8a0bb7f` (2026-01-10, the jar's `1.10.7`); the jar is `ports/_shared/licence-cache/industrial-foregoing-souls-1.21.1-1.10.7.jar`, sha256 `f4fb3640…67ec` |
-| package | `industrialforegoingsouls.hmod`, **121,782 B**, sha256 `e73258cc4aef8ff5e5e4e46d0f78b22b64c70a457dcf93a1932e0878d4474157`, 65 entries, no packed `Cargo.lock` |
-| registry | **first publication**, open on PR #1605; that PR publishes **`0.2.2`** (0.2.0/0.2.1 were dropped at the reviewer's rule — neither carried the declared dependency or the MIT notice). This is `0.2.5` appended to #1605, title `Add industrialforegoingsouls 0.2.5` (the id is not on `main`) |
+| package | `industrialforegoingsouls.hmod`, **121,876 B**, sha256 `45b62107ace1e3d80a6d25c71571f30b3671fb1b0578045c3c3627bda36fe439`, 65 entries, no packed `Cargo.lock` |
+| registry | **first publication**, open on PR #1605; that PR publishes **`0.2.2`** (0.2.0/0.2.1 were dropped at the reviewer's rule — neither carried the declared dependency or the MIT notice). This is `0.2.6` appended to #1605, title `Add industrialforegoingsouls 0.2.6` (the id is not on `main`) |
+| 2026-11-23 | **`0.2.6`: the Soul Pipe's connection rule asserted in game** (§1.8) — the tag that builds the pipe's shape never named the laser base, so the machine half of upstream's `connectsTo` was not carried; fixed and proven with `ctl block` both ways round |
+| 2026-11-23 | **re-verification of the three blocked families — evidence only, no new version** (§1.7): the comparator and the surge's block-entity and entity branches are still refused by the pin, each measured with the compiler rather than read |
 
 Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
 
@@ -284,6 +286,124 @@ at `bf736d2f` (`config/ConfigSoulLaserBase.java`, `config/ConfigSoulSurge.java`,
   called `Config`. Renaming it to `Settings` (no such API type) made both fits lines green; the
   ported code did not change. `sdk-check-0.2.5.log` / `sdk-fits-0.2.5.log` are that run.
 
+### 1.7 The 2026-11-23 re-verification of the three blocked families (evidence only)
+
+The three families the jar has and this port does not — the comparator and the surge's two
+acceleration branches — were re-read at this pin. **All three are still refused**, so this slice is
+**evidence, not a version**: the package stays `0.2.5` (121,782 B, sha256 `e73258cc…4157`, 65
+entries), nothing was repackaged, and the tree is byte-identical to the packed one afterwards
+(`verify-sdk-package` 1/1, the 18 legs `logs=18 ok=18`). Each row is now measured with the
+**compiler** on a temporary `src/probe_blocked.rs` (deleted after the run), not with a reading:
+`sdk-probe-blocked-comparator-2026-11-23.log`, `sdk-probe-blocked-handle-2026-11-23.log`,
+`sdk-surface-blocked-2026-11-23.log` (the whole surface, with the commands that produced it) and
+`REVERIFY-BLOCKED-2026-11-23.md` (the write-up). Skills: superpowers/using-superpowers,
+verification-before-completion, systematic-debugging; BeautifulRust/rust-best-practices.
+
+1. **The comparator — `blocked(analog-output-needs-level-entity-lookup)`** (0.2.5 spelled it
+   `analog-output-needs-block-entity-read`; same gap, named after the missing lookup). The hook is
+   `fn analog_output(&self, _: &dyn LevelHost, _: &mut AnalogOutputEvent)`
+   (`surface.json:52602`), and `AnalogOutputEvent` carries `dimension, pos, state, face, output` —
+   **no `LevelRef` and no entity handle**. `LevelHost` has 19 methods; the only one that touches a
+   block entity is `block_entity_data(BlockEntityRef)`, i.e. it needs the handle already.
+   `block_entity(LevelRef, [i32; 3])` is on `Host` (`prelude::BlockEntitiesHost`), `LevelRef` has no
+   lookup (147 methods, the one naming an entity is `entity_ticking`), and the handle cannot be
+   built: its fields are `pub(crate)` ("its fields are private, so mods cannot build or destructure
+   it"). The probe: `error[E0599]: no method named 'block_entity_at' found for reference
+   '&dyn LevelHost'` (whose `help:` line suggests `block_entity_data` — the gap in one line) and
+   `error[E0451]: fields 'level', 'position' and 'generation' of struct 'BlockEntityRef' are
+   private`. The formula and its test (`the_analog_output_scales_the_tank_to_fifteen`) stay green
+   and ready; only the hook is missing.
+2. **The surge's block-entity branch — `blocked(no-tick-another-block-entity)`, unchanged.**
+   `BlockEntityPart::block_entity_tick` is a **hook**: the engine calls it for *this mod's own*
+   entity ("when its `id` is yours"), never a call a mod makes for another. The one "run a tick now"
+   helper, `LevelRef::block_tick`, runs **the block's** scheduled tick — its own doc: "the block's
+   part first, else `BlockState.tick`" — and a furnace's cook `progress` advances in the furnace's
+   **block-entity** ticker, which that path does not run. So the brief's in-game measurement (a
+   furnace's `progress` under a surge tick) has nothing
+   to run: `block_tick` is the block's tick, not the machine's, and this port will not report its
+   number as if it were the branch. `BlockEntityRef`'s 17 methods do not tick either. Probe:
+   `error[E0599]: no method named 'tick_block_entity' found for mutable reference '&mut dyn
+   ServerHost'` (whose `help:` suggests the read `block_entity`).
+3. **The surge's entity branch — `blocked(no-entity-tick)`, unchanged.** On `EntityRef`/`LivingRef`
+   the only tick-named methods are reads (`tick_count`, `ticks_frozen`) and `set_ticks_frozen`, which
+   *stops* ticks; `LevelRef` has no tick-entity. Probe: `error[E0599]: no method named 'tick' found
+   for struct 'LivingRef'`.
+
+**What would unblock each** (the issue shape to file): a `LevelHost` block-entity lookup by position
+(or a `LevelRef` on `AnalogOutputEvent`); a host call that runs a block entity's ticker at a position
+(the API already has the temporary tick take/put its identity doc describes); `LevelRef::tick_entity`
+/ `LivingRef::tick`. **None of the three is in the newest SDK either** (`sdk-f1bb66f3`, below), so a
+repin alone does not unblock them.
+
+**The pin check has to be read, not taken at face value.** `check-pin-updates.py` answered
+`PIN MOVED: 27675 commit(s) ahead` with `hooks: +0 -0` — but it compares
+`ports/_shared/pins/horizon-1d63e0a` (there is no `0a875da` checkout on this box), and its catalog
+fetch **failed** (`catalog compare failed: HTTP Error 404`: `native-hooks.json` is 200 at `1d63e0a`,
+404 at the tip *and* at `0a875da` — the catalog moved with the SDK layout). `mixins latest` *is* this
+pin's mixins (`e59da909…`). Measured for the real pin: **583 commits** to the tip `2e7d2c6`.
+
+**And the newest SDK was checked too, because `NIGHTLY-READY.md` is stale.** That marker (2026-11-21)
+names `0a875da` as the newest SDK; the releases since are `sdk-8f83e5c8` and `sdk-f037744a` (11-21),
+`sdk-2b77287d` and `sdk-f1bb66f3` (2026-11-22). So `sdk-f1bb66f3`'s own `surface.json` (7,034,387 B,
+sha256 `a72f0c5e…af54`) was compared with this pin's: 224 traits / 1,814 handles / 1,704 types against
+219 / 1,795 / 1,656 — and on the three rows **identical**: `LevelHost` still has
+`block_entity_data(BlockEntityRef)` as its only block-entity method, `AnalogOutputEvent` still has
+the same five fields, `BlockEntityRef`'s 17 methods are the same 17, and **no handle has a `tick`**
+(`sdk-newest-surface-check-2026-11-23.log`). **A repin alone would not unblock the comparator or the
+two acceleration branches.**
+
+### 1.8 The 0.2.6 slice: the pipe's connection rule, asserted in game
+
+The family the parity rule still left unproven (§6: *the pipe's shape and joins — carried, not
+asserted in game*). Upstream's `SoulPipeBlock` keeps a three-value property per side and its
+`connectsTo` gives
+
+| neighbour | side state |
+|---|---|
+| `SoulPipeBlock`, `SoulSurgeBlock` | `pipe` |
+| a network connection or **a soul handler** | `block` |
+| anything else | `none` |
+
+and `SLBSoulCap`/`SoulLaserBaseBlockEntity` is the mod's only soul handler (`FINDINGS.md`). 26.3
+builds a pipe's shape itself from a `chorus_plant` template, so `none|block|pipe` collapses to one
+boolean a side (§3 item 5) — **but both joined states still join**, and the boolean is fed by the
+declaration's `connects_to` tag: `horizon/crates/horizon-world/src/level/place.rs`
+`pipe_connects` = the block itself or **a neighbour in that tag**.
+
+**The defect.** The tag this port generates (`tools/assemble_content.py`) named the pipe and the
+surge only. The laser base was missing, so a pipe beside the machine read `north=false` and drew no
+arm: the machine half of `connectsTo` was never carried, and no leg had ever asserted the shape, so
+it survived every earlier slice. It is a **fidelity defect, not a platform gap** — the tag is
+this port's own and the engine joins a non-pipe block from it (the template does not decide
+membership).
+
+**The fix** is one value in the generated tag (`soul_laser_base`), regenerated and proven by
+`assemble_content.py --check`. No Rust changed: the joining rule is the engine's and the port's
+input to it is the tag. The `block` vs `pipe` **arm style** stays the recorded deviation (§3 item 5):
+both are a join, and the port draws `soul_network_pipe_side` on either.
+
+**What the leg proves** (phase J, `tools/e2e.sh`), all on one pipe at `196 101 -6`:
+
+```
+  the probe pipe's state, read back: industrialforegoingsouls:soul_network_pipe[down=false,east=true,north=false,south=false,up=false,waterlogged=false,west=false]
+  the pipe beside the base: north=true, east=true; the base's own state: 'industrialforegoingsouls:soul_laser_base'
+  the joined pipe's state, read back: industrialforegoingsouls:soul_network_pipe[down=false,east=true,north=true,south=false,up=false,waterlogged=false,west=false]
+```
+
+- `north` is the **stone → laser base swap on the same pipe**: `false` against `minecraft:stone`,
+  `true` once the soul handler replaces it, so the differential and the join are the same block.
+- `east=true` is a pipe next to a pipe; `south/west/up/down=false` includes `down`, whose neighbour is
+  the arena's own stone floor — a tag wider than upstream would have shown there.
+- The **base's own state carries no pipe property** (it prints as its id): the `block` state belongs
+  to the pipe, as upstream draws it.
+- Two more probes cover the other paths a join comes from: a pipe **placed** beside an existing base
+  (the placement rule, `pipe_with_connections`) and beside a **surge** (upstream's `pipe` state).
+- `SELFTEST=joins` asserts that north side is `false` and fails
+  (`FAIL: selftest: the pipe's north side next to the soul handler is true, expected false`).
+
+The pre-fix run of the same phase is the red (`e2e-launcher-red-joins.log`, against the **0.2.5**
+export): `FAIL: the pipe's north side next to the soul handler is false, expected true`.
+
 ## 2. The family table (from the jar, before any code)
 
 147 entries, 329,233 B: three blocks, no items of its own, one client GUI addon, three recipes, three
@@ -292,7 +412,7 @@ loot tables, five tags.
 | family | jar evidence | row |
 |---|---|---|
 | `soul_laser_base` block + BE (bar, warden harvest, 1,350 tank, catalyst slot) | `block/SoulLaserBaseBlock.java`, `block/tile/SoulLaserBaseBlockEntity.java` | **ported and tested** (phases A–D) |
-| `soul_network_pipe` block + BE + Titanium `SoulNetwork` | `block/SoulPipeBlock.java`, `block/tile/SoulPipeBlockEntity.java`, `block_network/*` | **ported and tested** (phase E) |
+| `soul_network_pipe` block + BE + Titanium `SoulNetwork` | `block/SoulPipeBlock.java`, `block/tile/SoulPipeBlockEntity.java`, `block_network/*` | **ported and tested** (phase E; the shape and joins are phase J) |
 | `soul_surge` block + BE (300-tick soul, random ticks, redstone) | `block/SoulSurgeBlock.java`, `block/tile/SoulSurgeBlockEntity.java` | **ported and tested** (phases F–H), with the two gaps below |
 | 3 shaped recipes | `data/*/recipe/{soul_laser_base,soul_network_pipe,soul_surge}.json` | **ported and crafted in game** (phase K) |
 | 3 loot tables + `mineable/pickaxe` | `loot_table/blocks/*.json`, `tags/block/mineable/pickaxe.json` | **ported and broken for drops** (phase L) |
@@ -344,7 +464,11 @@ Each of these is a decision the pin forced; none of them fakes a rule.
    pipe's shape and joins it on placement and every neighbour change for a
    `minecraft:chorus_plant` template with `connects_to`; the jar's `none|block|pipe` collapses to one
    boolean a side, and `soul_network_pipe_side` is drawn for each joined side. The jar's
-   `soul_network_pipe_side_to_pipe` (a second arm style) is not carried.
+   `soul_network_pipe_side_to_pipe` (a second arm style) is not carried. **Both joined states still
+   join**: the tag the shape reads (`#industrialforegoingsouls:soul_connects`) names the pipe, the
+   surge and — since 0.2.6 — the laser base, which is upstream's `block` state because it is the
+   mod's only soul handler. Before 0.2.6 it named only the first two, so the machine joined nothing
+   (§1.8).
 6. **`c:stones` is ours.** 26.3 ships no `c:` item tags, so two of the three recipes would never
    match. The port declares `data/c/tags/item/stones.json` with the 12 vanilla natural stones
    `simplylight` declares, so every port shipping the tag agrees; the e2e crafts with
@@ -665,16 +789,83 @@ warden is in the box) before it summons one; the second run passed. Everything t
 supposed to change was already visible in the failing run — `souls 0/500` and `souls 500/500` — so
 the file itself was read correctly the first time.
 
+### 4.6 The 2026-11-23 re-verification's red — a probe, not a new family
+
+No unit test was added, because the family's rule is already there and green
+(`the_analog_output_scales_the_tank_to_fifteen` among the 60). The red is the pin refusing the glue
+each blocked family would need: a temporary `src/probe_blocked.rs` (four functions, one per route)
+compiled through the slot runner, then deleted. The compiler, verbatim:
+
+```
+$ cargo test --locked --offline        # with src/probe_blocked.rs in the tree
+error[E0599]: no method named `block_entity_at` found for reference `&dyn LevelHost` in the current scope
+  --> src/probe_blocked.rs:15:24
+15 |     let entity = level.block_entity_at(event.pos);
+   |                        ^^^^^^^^^^^^^^^
+help: there is a method `block_entity_data` with a similar name
+error[E0599]: no method named `tick_block_entity` found for mutable reference `&mut dyn ServerHost` in the current scope
+  --> src/probe_blocked.rs:33:18
+33 |     let _ = host.tick_block_entity(level, pos);
+   |                  ^^^^^^^^^^^^^^^^^
+help: there is a method `block_entity` with a similar name
+error[E0599]: no method named `tick` found for struct `LivingRef` in the current scope
+  --> src/probe_blocked.rs:39:12
+39 |     entity.tick(host);
+   |            ^^^^ method not found in `LivingRef`
+error: could not compile `industrialforegoingsouls` (lib) due to 3 previous errors
+EXIT:101
+```
+
+and, with only the handle-construction route left, the fourth:
+
+```
+$ cargo check --locked --offline
+error[E0451]: fields `level`, `position` and `generation` of struct `BlockEntityRef` are private
+  --> src/probe_blocked.rs:9:9
+EXIT:101
+```
+
+(`sdk-probe-blocked-comparator-2026-11-23.log`, `sdk-probe-blocked-handle-2026-11-23.log`.) The
+probe was removed and the tree re-run green in the same slot registry: **60 passed, 0 failed**,
+`cargo fmt --check` exit 0, `cargo clippy --all-targets -- -D warnings` exit 0 with 0 warnings
+(`sdk-test.log`, `sdk-fmt-2026-11-23.log`, `sdk-clippy-2026-11-23.log`); `verify-sdk-package` 1/1
+says every packed file is the tree's bytes, so the probe left nothing behind.
+
+### 4.7 The 0.2.6 slice's red — the pipe's join, in game
+
+The family's rule is the engine's (`pipe_connects`: itself, or a neighbour in the `connects_to` tag),
+so the unit suite cannot fail on the tag this port feeds it; the honest red is the in-game assertion
+run against the **previous** package. Phase J was written first and run against the 0.2.5 export
+(`native-0a875da-893f7451dc2f`, `industrialforegoing` 0.2.11 + `industrialforegoingsouls` 0.2.5),
+before any content changed:
+
+```
+== J: the pipe joins a pipe and a soul handler, and not a plain block (0.2.6) ==
+  beside a pipe: east=true; beside stone: north=false, and south/west/up/down=false
+FAIL: the pipe's north side next to the soul handler is false, expected true
+EXIT:1
+```
+
+(`industrialforegoingsouls-e2e/e2e-launcher-red-joins.log`.) The two assertions before it passed, so
+the failure is the missing machine join and nothing else — the same pipe already read `east=true`
+beside a pipe and `north=false` beside stone. The fix is the generated tag
+(`assemble_content.py`, `soul_laser_base` added); `python3 tools/assemble_content.py --check` was
+red on the missing value and green after (`CONTENT OK: 57 files`), and the same phase then read
+`north=true` (`notes.md` §1.8 has both state strings).
+
 ## 5. In-game evidence (fail-capable)
 
 `ports/_shared/evidence/industrialforegoingsouls-e2e/`, all through `tools/e2e-two-mod.sh` (one game
-carrying this port **and** its parent, `industrialforegoing` 0.2.11 when these legs ran). The 0.2.0
+carrying this port **and** its parent, `industrialforegoing` 0.2.12 when these legs ran). The 0.2.0
 legs are kept with a `-0.2.0` suffix and the 0.2.1 ones with `-0.2.1`; the unsuffixed logs are this
-0.2.5 run (2026-11-23, 11:58–12:51):
+0.2.6 run (2026-11-23, 13:20–14:15), except the control and `SELFTEST=1`, which ran on the same tree
+one documentation commit earlier (§1.8 — the README is packed, so the green leg and `SELFTEST=joins`
+were re-run on the final build, `native-0a875da-4da2fb4c3115`):
 
 | leg | verdict | what it proves |
 |---|---|---|
-| `e2e-launcher.log` (0.2.5) | **`PASS` + `EXIT:0`** | the whole scenario, phases A–N, D2–D3, R, S, K–L, P–Q, M2, and this slice's **T** |
+| `e2e-launcher.log` (0.2.6) | **`PASS` + `EXIT:0`** | the whole scenario, phases A–N, D2–D3, J, R, S, K–L, P–Q, M2, and T |
+| `e2e-launcher-red-joins.log` | `FAIL: the pipe's north side next to the soul handler is false, expected true` + `EXIT:1` | **this slice's red**: the same phase against the 0.2.5 package, before the tag named the laser base |
 | `e2e-launcher-control.log` | `FAIL: the game refused industrialforegoingsouls:soul_laser_base` + `EXIT:1` | the same script on the same Nightly **without** the package |
 | `e2e-launcher-selftest.log` | `FAIL: selftest: the soul tank is 0, expected anything but 0` + `EXIT:1` | the lens differential can fail |
 | `e2e-launcher-selftest-screen.log` | `FAIL: selftest: the base opened a menu (container), expected none` + `EXIT:1` | **this slice's** menu differential can fail |
@@ -684,11 +875,29 @@ legs are kept with a `-0.2.0` suffix and the 0.2.1 ones with `-0.2.1`; the unsuf
 | `e2e-launcher-selftest-carry.log` | `FAIL: selftest: the restored tank is 30, expected 0` + `EXIT:1` | the carried contents are real, not a stale machine |
 | `e2e-launcher-selftest-replace.log` | `FAIL: selftest: the lens the swap returned is 1, expected 0` + `EXIT:1` | the replaced lens is returned, not voided |
 | `e2e-launcher-selftest-waterlog.log` | `FAIL: selftest: the pipe's waterlogged state is true, expected false` + `EXIT:1` | the water the bucket puts in is real, not a readout |
-| `e2e-launcher-selftest-config.log` | `FAIL: the tank's capacity, from the config in force is 500, expected 1350` + `EXIT:1` | **this slice's** differential: the tuned file really is in force |
+| `e2e-launcher-selftest-config.log` | `FAIL: the tank's capacity, from the config in force is 500, expected 1350` + `EXIT:1` | the 0.2.5 differential: the tuned file really is in force |
+| `e2e-launcher-selftest-joins.log` | `FAIL: selftest: the pipe's north side next to the soul handler is true, expected false` + `EXIT:1` | **this slice's** differential: the join is real, not a passing read |
 
 `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` →
-`logs=18 ok=18 missing-exit=0 bad-exit=0` (four 0.2.0, three 0.2.1, and the eleven unsuffixed legs of
-this run: the green one, the control and the nine selftests).
+`logs=20 ok=20 missing-exit=0 bad-exit=0` (four 0.2.0, three 0.2.1, and the thirteen unsuffixed legs:
+the green one, the red, the control and the ten selftests).
+
+**The pipe-join transcript**, phase J of the 0.2.6 leg — one pipe at `196 101 -6`, the differential
+and the join on the same side:
+
+```
+== J: the pipe joins a pipe and a soul handler, and not a plain block (0.2.6) ==
+  beside a pipe: east=true; beside stone: north=false, and south/west/up/down=false
+  the probe pipe's state, read back: industrialforegoingsouls:soul_network_pipe[down=false,east=true,north=false,south=false,up=false,waterlogged=false,west=false]
+  the pipe beside the base: north=true, east=true; the base's own state: 'industrialforegoingsouls:soul_laser_base'
+  the joined pipe's state, read back: industrialforegoingsouls:soul_network_pipe[down=false,east=true,north=true,south=false,up=false,waterlogged=false,west=false]
+  a pipe placed beside a base or a surge joins that side too
+```
+
+The north neighbour is `minecraft:stone` in the first read and the laser base in the second, so the
+same pipe's same side flips; `down` is the arena's stone floor and stays `false` (a tag wider than
+upstream's `connectsTo` would show there), and the handler's own state is its id — the `block` state
+is the pipe's.
 
 **The config transcript**, phase T of this run — the template the game wrote, the tuned file, and what
 it changed in the same machine:
@@ -706,10 +915,11 @@ The differential is the whole first launch, which never sees a config file the p
 reads `souls 8/1350` for four operations and `SELFTEST=config` (the same tuned file, the default
 expectation) fails at `the tank's capacity, from the config in force is 500, expected 1350`.
 
-The control and the nine selftests ran on the same source tree and manifest as the delivered package,
-one `README.md` edit earlier (the README is packed, so the package was rebuilt and the **green** leg
-re-run on the final build, `native-0a875da-893f7451dc2f`; the README is documentation, not code, and
-the failing legs' verdicts do not depend on it).
+The control and `SELFTEST=1` ran on the same source tree and manifest as the delivered package, one
+`README.md` edit earlier (the README is packed, so the package was rebuilt and the **green** leg and
+`SELFTEST=joins` re-run on the final build, `native-0a875da-4da2fb4c3115`; the README is
+documentation, not code, and both legs' verdicts — a refused item in a game without the package, an
+inverted assertion at phase B — do not depend on it).
 
 **The menu transcript**, phase S of the 0.2.4 leg — the slots, the lens seated through the menu, the
 data slots and the differential:
@@ -841,9 +1051,9 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
 | 20-tick bar, warden harvest, 2 souls an operation, 1,350 tank | **tested** — phase C: 4 operations = 16 damage = 8 souls, `souls == 2 × operations` |
 | the lens gate (blue only, none without) | **tested** — phases B and D, the differential above |
 | the 1,350 cap | **tested** — `the_tank_stops_at_1350` (unit) |
-| the comparator output | **blocked(`analog-output-needs-block-entity-read`)** — formula unit-tested |
+| the comparator output | **blocked(`analog-output-needs-level-entity-lookup`)** — formula unit-tested; re-verified 2026-11-23 with the compiler: the hook gets no level or entity handle, `LevelHost` reads data only from a handle, and a handle cannot be built (§1.7) |
 | pipe network 4 a pipe, 4-pull from the machine | **tested** — phase E: 50 → 46 with one pipe (4/4), 46 → 42 with two (8/8); the walk is set-based, bounded and once a tick (`a_two_hundred_pipe_line_is_walked_once_a_tick`, `a_network_walk_stops_at_the_budget`, `a_cached_component_keeps_the_ticks_transfer`) |
-| the pipe's shape and joins | **carried** — `chorus_plant` template + `connects_to` (not asserted in game; the state string shows `east=true` next to its neighbour) |
+| the pipe's shape and joins | **tested** — phase J: one pipe reads `[down=false,east=true,north=false,south=false,up=false,waterlogged=false,west=false]` with a pipe east and `minecraft:stone` north, then `north=true` once the laser base replaces the stone (the differential and the join are the same side), with `down` the arena's stone floor staying `false`; the base's own state is its id (no pipe property); a pipe **placed** beside an existing base and one beside a **surge** join too; `SELFTEST=joins` asserts `north=false` and fails. Red against 0.2.5: `the pipe's north side next to the soul handler is false, expected true` |
 | surge placement (`state_for_placement` → `facing` from the clicked face) | **tested** — phase F: a top-face placement reads `facing=up` |
 | surge spends one soul for 300 ticks | **tested** — phase G: network 3 → 2, `wait` 293 → 0 over 1,200 ticks |
 | surge random-ticks the block it is mounted on | **tested** — phase G: wheat age 7 with `random_tick_speed 0`, control 0 (1,200-tick window, so a 3 % roll cannot miss) |
@@ -865,18 +1075,23 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
 | the recipe advancement | **carried** — the jar's own, loaded without error (the launch's load-error count is 0) |
 | waterlogging on the pipe and the surge | **tested** — phase R: a fresh pipe reads `waterlogged=false` and `0/4`; a water-bucket click makes it `true` and leaves the empty bucket in the hand; the waterlogged pipe still pulls the laser base `50 → 46` into `4/4`; an empty-bucket click makes it `false` and puts the water bucket in the inventory; a surge set to `[facing=north,waterlogged=true]` reads both properties back and spends a soul (`3/4`, `wait 292 → 256`); a dry surge reads `false`; `SELFTEST=waterlog` fails on the state. The interface-gated half is `blocked(no-waterlogged-interface)` |
 | Sculk Soul Tank screen addon | **not ported** — parent GUI |
-| surge BE / entity branches | **blocked** — `no-tick-another-block-entity`, `no-entity-tick` |
+| surge BE / entity branches | **blocked** — `no-tick-another-block-entity`, `no-entity-tick`; re-verified 2026-11-23 with the compiler (§1.7): `block_entity_tick` is a hook for this mod's own entity, `LevelRef::block_tick` runs the *block's* `BlockState.tick` (not a machine's ticker), and no handle ticks an entity |
 | the config file (`config/industrialforegoingsouls/config.json`) | **tested** — phase T: the game writes the twelve-key template with the jar's defaults (`soul_storage 1350`, `souls_per_operation 2`); a tuned file `{"soul_storage": 500, "souls_per_operation": 5}` written **before** a second launch makes the same machine read `souls 0/500`, clamp a seeded 900 to `500/500`, keep the unnamed `max_progress` at 20, carry 500 in the menu's data slot, and store **5** souls in the first operation, where the untuned first launch stored 2 and capped at 1,350; `SELFTEST=config` asserts 1,350/2 on that tuned file and fails. Unit: `no_config_file_is_the_jars_defaults`, `the_config_file_reads_every_key`, `the_minimums_the_jar_declares_are_enforced`, `a_value_outside_its_range_is_clamped_not_refused`, `a_partial_or_broken_file_keeps_the_defaults`, `unknown_keys_are_ignored_and_both_spellings_are_read`, `the_written_file_parses_back_and_names_every_key`, and the five tuned-rule tests |
 | the two acceleration-branch keys (`acceleration_tick`, `entities_acceleration_tick`) and the client particle key | **accepted, not used** — the branches are `blocked(no-tick-another-block-entity)` / `blocked(no-entity-tick)` and the client half is not ported; the keys stay in the file so the surface matches the jar |
 
 ## 7. Gaps (issue-shaped, for the ledger)
 
-- `blocked(analog-output-needs-block-entity-read)` — `BlockPart::analog_output` gets
-  `&dyn LevelHost`; a comparator read of a block entity's own compound needs a host that resolves
-  one by position.
+- `blocked(analog-output-needs-level-entity-lookup)` — `BlockPart::analog_output` gets
+  `&dyn LevelHost` and an event with `pos`/`dimension` only; the only block-entity read on
+  `LevelHost` takes an already-resolved `BlockEntityRef`, the lookup (`block_entity(LevelRef, pos)`)
+  lives on `Host`, `LevelRef` has none, and the handle cannot be built. Re-verified 2026-11-23 with
+  the compiler (`E0599` + `E0451`, §1.7). (0.2.5 spelled this `analog-output-needs-block-entity-read`.)
 - `blocked(no-tick-another-block-entity)` — the surge's headline use (accelerating a machine) has no
-  helper; `block_entity_tick` ticks only its own entity.
-- `blocked(no-entity-tick)` — `LivingEntity.tick()` ×4 has no route.
+  helper; `block_entity_tick` ticks only its own entity, and `LevelRef::block_tick` runs the block's
+  `BlockState.tick`, not a block entity's ticker (re-verified 2026-11-23: `E0599`
+  `tick_block_entity`, §1.7).
+- `blocked(no-entity-tick)` — `LivingEntity.tick()` ×4 has no route; no handle ticks an entity and
+  `LevelRef` has no tick-entity (re-verified 2026-11-23: `E0599` `tick` on `LivingRef`, §1.7).
 - `blocked(no-mod-capability)` — the pipe cannot see a soul handler in another mod; the four
   `block_entity` read APIs are the whole surface.
 - `blocked(no-block-state-write-outside-set-block)` — for a machine that keeps state in its block
@@ -1028,16 +1243,52 @@ forwarded, and the local format was proven separately (§4.5):
 | control + selftest ×9 | `GAME=$CONTROL_GAME`, `SELFTEST=1`, `screen`, `augment`, `laser`, `grow`, `carry`, `replace`, `waterlog`, **`config`** | `FAIL` + `EXIT:1` each, at the intended assertion | `…-e2e/e2e-launcher-control.log`, `…-selftest{,-screen,-augment,-laser,-grow,-carry,-replace,-waterlog,-config}.log` |
 | log gate | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=18 ok=18 missing-exit=0 bad-exit=0` | — |
 
+The **2026-11-23 re-verification** rows (evidence only: no version, no package, no new e2e leg):
+
+| step | command | result | log |
+|---|---|---|---|
+| pin check | `python3 ports/tools/check-pin-updates.py` | exit 2, `PIN MOVED: 27675` — but read §1.7: it compares the `1d63e0a` checkout and its catalog fetch 404s; for this pin it is 583 commits to the tip and no newer SDK release | `industrialforegoingsouls/pin-check-2026-11-23.log` |
+| surface | the pin's `surface.json` + crate sources, each command echoed into the log | the three families' exact signatures and the absent calls | `industrialforegoingsouls/sdk-surface-blocked-2026-11-23.log` |
+| red (probe) | `cargo test --locked --offline` with `src/probe_blocked.rs` | **E0599 ×3** (`block_entity_at`, `tick_block_entity`, `tick`), exit 101 | `industrialforegoingsouls/sdk-probe-blocked-comparator-2026-11-23.log` |
+| red (handle) | `cargo check --locked --offline`, the literal route only | **E0451** private fields, exit 101 | `industrialforegoingsouls/sdk-probe-blocked-handle-2026-11-23.log` |
+| tests | `cargo test --locked --offline` after the probe was removed | **60 passed, 0 failed** | `industrialforegoingsouls/sdk-test.log` |
+| format | `cargo fmt --check` | exit 0 | `industrialforegoingsouls/sdk-fmt-2026-11-23.log` |
+| lints | `cargo clippy --all-targets --locked --offline -- -D warnings` | exit 0, 0 warnings | `industrialforegoingsouls/sdk-clippy-2026-11-23.log` |
+| package gate | `python3 ports/tools/verify-sdk-package.py industrialforegoingsouls` | **1/1**, package = tree (the probe left nothing) | — |
+| 18 legs | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=18 ok=18 missing-exit=0 bad-exit=0` | — |
+
+The **0.2.6** rows (the pipe's connection rule):
+
+| step | command | result | log |
+|---|---|---|---|
+| red (the join, in game) | phase J on the **0.2.5** export, before any content changed | `FAIL: the pipe's north side next to the soul handler is false, expected true`, `EXIT:1` | `industrialforegoingsouls-e2e/e2e-launcher-red-joins.log` |
+| content | `python3 tools/assemble_content.py --check` | red — `differs or missing: data/…/tags/block/soul_connects.json`; then `CONTENT OK: 57 files` | — |
+| version | `horizon-mod.toml` + `Cargo.toml` 0.2.5 → **0.2.6** (and the tree's `Cargo.lock`) | `horizon-mod.toml:3`, `Cargo.toml:9` | — |
+| tests | `cargo test --locked --offline` | **60 passed, 0 failed** (no Rust changed: the joining rule is the engine's) | `industrialforegoingsouls/sdk-test.log` |
+| format | `cargo fmt --check` | exit 0 | `industrialforegoingsouls/sdk-fmt-0.2.6.log` |
+| lints | `cargo clippy --all-targets --locked --offline -- -D warnings` | exit 0, **0** warnings | `industrialforegoingsouls/sdk-clippy-0.2.6.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` ×2, the SDK-generated lock stripped from each archive | `CMP-IDENTICAL`, sha256 `45b62107…e439`, **121,876 B**, **65** entries, `PACKED-LOCK: 0` | `industrialforegoingsouls/sdk-build-0.2.6.log` |
+| check | `cargo horizon-mod check industrialforegoingsouls.hmod` (`BUILD_LOCAL=1`) | `industrialforegoingsouls 0.2.6 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **121,876 B**, sha256 `45b62107…e439`, exit 0 | `industrialforegoingsouls/sdk-check-0.2.6.log` |
+| fits (pin) | `… fits … --build 0a875da` | `0a875da  made for`, exit 0 | `industrialforegoingsouls/sdk-fits-0.2.6.log` |
+| fits (other) | `… fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `industrialforegoingsouls/sdk-fits-0.2.6.log` |
+| recipe types | `python3 ports/tools/check-recipe-types.py industrialforegoingsouls` | `industrialforegoingsouls: ok` | — |
+| package gate | `python3 ports/tools/verify-sdk-package.py industrialforegoingsouls` | **1/1** (60 tests; runtime byte-identical; every packed file is the tree's; no packed `Cargo.lock`) | — |
+| launcher build | `tools/e2e-two-mod.sh build` (the two stale `native-0a875da-*` tags carrying this port **and** the export removed first) | `Compiling industrialforegoing (1 of 2)`, **`Compiling industrialforegoingsouls (2 of 2)`**, `the build carries: industrialforegoing 0.2.12, industrialforegoingsouls 0.2.6` (`native-0a875da-4da2fb4c3115`) | `industrialforegoingsouls/e2e-two-mod-build-0.2.6.log` |
+| in-game | `tools/e2e.sh` on that build (A–N, D2–D3, **J**, R, S, K–L, P–Q, M2, T) | **`PASS` + `EXIT:0`** | `…-e2e/e2e-launcher.log` |
+| control + selftest | `GAME=$CONTROL_GAME`, `SELFTEST=1`, **`joins`** | `FAIL` + `EXIT:1` each, at the intended assertion | `…/e2e-launcher-control.log`, `…-selftest.log`, `…-selftest-joins.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=20 ok=20 missing-exit=0 bad-exit=0` | — |
+
 ## 9. Files
 
 ```
 Cargo.toml, horizon-mod.toml, LICENSE, README.md, .gitignore
-industrialforegoingsouls.hmod     delivered package (121,782 B, sha256 e73258cc…4157)
+industrialforegoingsouls.hmod     delivered package (121,876 B, sha256 45b62107…e439)
 SLICE-PLAN-0.2.1.md               the first slice's plan (families, assertions, TDD order)
 SLICE-PLAN-0.2.2.md               the carrying slice's plan
 SLICE-PLAN-0.2.3.md               the waterlogging slice's plan (the pin's measurements, TDD order)
 SLICE-PLAN-0.2.4.md               the menu-and-screen slice's plan (the API check, TDD order)
 SLICE-PLAN-0.2.5.md               the config-file slice's plan (the jar's twelve keys, the file, TDD order)
+SLICE-PLAN-0.2.6.md               the pipe-join slice's plan (upstream's connectsTo, the tag defect, TDD order)
 REVIEW-FIXES-0.2.2.md             the reviewer's four findings and how each is answered
 src/lib.rs                        the one impl Hooks + the three Parts + the menu, the screen and the break stash
 src/config.rs                     config/industrialforegoingsouls/config.json: the value in force, read once
@@ -1049,7 +1300,7 @@ tools/assemble_content.py         jar -> assets/data, re-spelled for 26.3 (`--ch
 tools/craft_recipe.py             the three recipes + the stand-in control, in a real table
 tools/parse_info.py               `/industrialforegoingsouls info` -> shell fields (with the menu's data slots)
 tools/parse_carry.py              a broken machine's `minecraft:block_entity_data` payload -> its tank and its `carried` stacks
-tools/e2e.sh                      the in-game scenario (A–R, D2–D3 the augment, S the menu, P the carried contents, Q the lens swap, R the waterlogging, M2 the parent laser, T the config file)
+tools/e2e.sh                      the in-game scenario (A–R, D2–D3 the augment, J the pipe's joins, S the menu, P the carried contents, Q the lens swap, R the waterlogging, M2 the parent laser, T the config file)
 tools/build-package.sh            the delivered package, built twice and compared, the SDK lock stripped
 tools/parse_laser.py              the parent machine's `/industrialforegoing info` parser (its own, copied)
 tools/e2e-two-mod.sh              builds the two-mod game (this port + its parent) and runs it

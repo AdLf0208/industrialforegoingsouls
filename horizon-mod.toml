@@ -1,6 +1,6 @@
 id = "industrialforegoingsouls"
 name = "Industrial Foregoing: Souls"
-version = "0.2.5"
+version = "0.2.6"
 description = """A port of Industrial Foregoing: Souls for Horizon: the three blocks that are one soul
 economy. The Soul Laser Base seats an `industrialforegoing:blue_laser_lens` in its catalyst slot and,
 with a warden inside the box above it, hurts it for 4 every 20 ticks and stores 2 souls of the damage

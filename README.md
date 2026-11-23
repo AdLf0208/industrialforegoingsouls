@@ -12,7 +12,9 @@ The mod is one soul economy in three blocks:
   speed addon is refused. Its **menu** (a plain right-click) shows the catalyst slot, the two augment
   slots and the tank and the bar, as upstream's screen does.
 - **Soul Pipe** — carries souls: 4 a block of capacity, 4 a tick pulled out of an adjacent soul
-  handler and pushed into one that accepts.
+  handler and pushed into one that accepts. Its shape joins what it serves — a pipe or a surge
+  beside it, the laser base as the soul handler — and draws an arm on each joined side, as
+  upstream's `connectsTo` does; a plain block joins nothing.
 - **Soul Surge** — spends one soul on 300 accelerated ticks and random-ticks the block it is mounted
   on four times at a 3% chance a tick (a crop grows, where `random_tick_speed 0` means nothing else
   does), and stops while it is powered.
