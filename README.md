@@ -36,6 +36,11 @@ souls into a pipe network with a surge on whatever you want to accelerate.
 The package also carries the mod's one `industrialforegoing:laser_drill_ore` recipe — an echo shard
 from the deep dark — so the parent's ore laser base can mine it.
 
+The pipe and the surge also **hold water**, as upstream's `SimpleWaterloggedBlock` does: right-click
+either with a water bucket to fill it and with an empty bucket to take the water back; the machine
+keeps working either way. The full bucket a drain takes goes to the first free inventory slot (this
+pin reverts a water bucket written into the held slot from a click — `notes.md` §1.4).
+
 ## What this port does not do
 
 - The comparator output (the formula is implemented and unit-tested; the `analog_output` hook cannot
@@ -47,8 +52,11 @@ from the deep dark — so the parent's ore laser base can mine it.
   carry its contents on its item (souls, the bar, the lens, the addon), and placing it back restores
   them; a second lens swaps with the seated one, which comes back to the player.
 - A config file: the numbers are constants.
-- Waterlogging, and the surge's `enabled`/connection block states (the redstone rule is read in the
-  tick instead).
+- The waterloggable **interface** itself: a flowing fluid beside the pipe does not fill it and a
+  dispenser does not either (a content block's interfaces are its template's), and the port does not
+  invent a placement-into-water override the findings do not record. The state, the water the engine
+  reports for it and the player's bucket are ported.
+- The surge's `enabled`/connection block states (the redstone rule is read in the tick instead).
 
 `notes.md` records every deviation with its reason, the coverage table, and the in-game evidence;
 `FINDINGS.md` is the upstream behaviour; `VALIDATION.md` is the ladder that was run.
@@ -56,7 +64,7 @@ from the deep dark — so the parent's ore laser base can mine it.
 ## Building and testing
 
 ```
-cargo test                                                  # the pure runtime, 33 tests
+cargo test                                                  # the pure runtime, 38 tests
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 rm -f Cargo.lock && cargo horizon-mod build                 # -> industrialforegoingsouls.hmod
 cargo horizon-mod check industrialforegoingsouls.hmod

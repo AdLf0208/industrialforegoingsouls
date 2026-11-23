@@ -1,4 +1,4 @@
-# `industrialforegoingsouls` — Industrial Foregoing: Souls 0.2.2
+# `industrialforegoingsouls` — Industrial Foregoing: Souls 0.2.3
 
 The three blocks that are one soul economy, ported from **Industrial Foregoing: Souls 1.21.1-1.10.7**
 into Rust for Horizon 26.3 at the campaign pin.
@@ -10,8 +10,8 @@ into Rust for Horizon 26.3 at the campaign pin.
 | approach (`horizon/docs/modpacks.md`) | **agent port** of the behaviour, with the jar's content carried (models, blockstates, textures, recipes, loot, tags) |
 | pin | Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0` |
 | upstream | `InnovativeOnlineIndustries/Industrial-Foregoing-Souls`, commit `bf736d2f1140da25747ab97d8c160b44d8a0bb7f` (2026-01-10, the jar's `1.10.7`); the jar is `ports/_shared/licence-cache/industrial-foregoing-souls-1.21.1-1.10.7.jar`, sha256 `f4fb3640…67ec` |
-| package | `industrialforegoingsouls.hmod`, **96,432 B**, sha256 `7397e359a64ddb7b34f46e870ae8a8dc7c60ec2da15145b0a9dc735a50fb0e16`, 63 entries, no packed `Cargo.lock` |
-| registry | **first publication**, open on PR #1605 (`0.2.1`); this is `0.2.2` appended to that PR, title `Add industrialforegoingsouls 0.2.2` (the id is not on `main`) |
+| package | `industrialforegoingsouls.hmod`, **101,380 B**, sha256 `68b1485efc1539b665aeb623e986d042bb73626723bc3d9cd4c6b1d3124c88b8`, 63 entries, no packed `Cargo.lock` |
+| registry | **first publication**, open on PR #1605; that PR publishes **`0.2.2`** (0.2.0/0.2.1 were dropped at the reviewer's rule — neither carried the declared dependency or the MIT notice). This is `0.2.3` appended to #1605, title `Add industrialforegoingsouls 0.2.3` (the id is not on `main`) |
 
 Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-review
 
@@ -119,6 +119,37 @@ Four findings, fixed here without a new family:
    with a 100 budget.
 4. **The MIT notice is upstream's verbatim**, `Copyright (c) 2021 Buuz135, Rid`.
 
+### 1.4 The 0.2.3 slice: waterlogging on the pipe and the surge
+
+The gap row this closes, verbatim from §2 as 0.2.2 left it:
+
+> | waterlogging on the pipe and the surge | `SimpleWaterloggedBlock` | **not ported** — neither the
+> chorus-plant template nor the surge declares `waterlogged`; no fluid state |
+
+Upstream's `SoulPipeBlock` **is** a `SimpleWaterloggedBlock` and `SoulSurgeBlock` declares the
+`WATERLOGGED` property (`FINDINGS.md`). What the pin can express, measured before writing code:
+
+| upstream | this pin | evidence |
+|---|---|---|
+| the `WATERLOGGED` state property | **yes** — a declared `state_properties: { "waterlogged": {"type":"boolean"} }` on a template that lacks it | `horizon/docs/mods.md` (state properties); `data/…/horizon/block/*.json` after this slice |
+| a fluid state for the water it holds | **yes, and generic**: the engine derives a state's fluid from the **property name** (`prop("waterlogged") == Some("true") => (Fluid::Water, 8, false)`) and `is_waterlogged` is `table.bool(state, props.waterlogged)` — so a mob, fire, the minimap and the LOD all see the water | `crates/horizon-items/src/blocks.rs:431`, `crates/horizon-world/src/level/query.rs:117` |
+| the block's interface (`instanceof SimpleWaterloggedBlock`) | **no** — a content block's interface set is *copied from its template* (`chorus_plant`, `iron_block`: neither has it), `connects_to` rewrites the class only, and a template with both six-sided pipe joining and the interface does not exist | `crates/horizon-world/src/level/buckets.rs:50`, `crates/horizon-world/src/level/fluids.rs:76`, `crates/horizon-client/src/mod_content.rs` (`renames`/`states` clone the template's row) |
+| `BucketItem.emptyContents`/`BucketPickup` reaching the block | **through the block's own click** — exactly how this port already seats the lens and the augment (it ships no GUI): `BlockPart::use_item_on` writes the state and trades the bucket, with the vanilla bucket sound and `minecraft:fluid_place`/`minecraft:fluid_pickup` | `src/lib.rs` `waterlog_click`, `src/runtime.rs` `water_click`/`Waterlogged`/`bucket_destination` |
+
+So the slice ships the **state**, the engine's **fluid facts** for it and the **two bucket
+interactions**. The interface-gated half is recorded as a gap (§7):
+`blocked(no-waterlogged-interface)` — a **flowing fluid** does not fill the block, a **dispenser**
+does not, and the jar's `getStateForPlacement` override (placing the block *into* water) could not
+be verified from the findings, so the port does not invent it.
+
+The drain hands its water back to the **inventory**, not the hand: this pin reverts a water bucket
+written into the *held* slot from a click (measured 2026-11-23 with `set_inventory_slot` **and** with
+`give_stack`; the same write to a main-inventory slot persists, and a plain item in the held slot
+persists too). So `runtime::bucket_destination` picks the first free slot that is not the clicking
+hand, the off hand after it, and a full inventory refuses the drain rather than losing the water.
+Vanilla's `ItemUtils.createFilledResult` puts it in the hand; a player sees the water appear in the
+inventory instead. That is the one user-visible difference of this slice.
+
 ## 2. The family table (from the jar, before any code)
 
 147 entries, 329,233 B: three blocks, no items of its own, one client GUI addon, three recipes, three
@@ -140,7 +171,7 @@ loot tables, five tags.
 | the surge's block-entity branch (×4 ticks of a machine in front) | `SoulSurgeBlockEntity.java:60-70` | **blocked(`no-tick-another-block-entity`)** — `block_entity_tick` ticks the owning entity only |
 | the surge's entity branch (×4 ticks of `LivingEntity`) | `SoulSurgeBlockEntity.java:78-90` | **blocked(`no-entity-tick`)** — no helper ticks an entity |
 | config (`SOUL_STORAGE_AMOUNT 1350`, `MAX_PROGRESS 20`, `SOULS_PER_OPERATION 2`, `DAMAGE_PER_OPERATION 4`, `SOUL_TIME 300`, `BLOCK_ACCELERATION_TICK 4`, `RANDOM_TICK_ACCELERATION_CHANCE 0.03`, `SOUL_AMOUNT_PER_PIPE 4`) | `config/*.java` | the values are `runtime.rs` constants; **no config file** (a recorded deviation) |
-| waterlogging on the pipe and the surge | `SimpleWaterloggedBlock` | **not ported** — neither the chorus-plant template nor the surge declares `waterlogged`; no fluid state |
+| waterlogging on the pipe and the surge | `SimpleWaterloggedBlock` | **ported and tested** (phase R): the `waterlogged` state on both, the engine's water fluid state, a water bucket fills it and an empty bucket drains it; the interface itself (a flowing fluid, a dispenser, placement into water) stays `blocked(no-waterlogged-interface)` |
 
 ## 3. What the port does differently, and why
 
@@ -202,6 +233,13 @@ Each of these is a decision the pin forced; none of them fakes a rule.
    whose *type* no package registers. The parent package registers it, and a game without the parent
    refuses this package at load anyway (the lens), so the pair is always together. The jar's other 41
    `laser_drill_ore` files name ores no package here ships and are not carried.
+10. **Waterlogging is the state plus a click, and the drained bucket goes to the inventory.** A
+    content block cannot attach `SimpleWaterloggedBlock` (its interfaces are its template's), so the
+    block's own `use_item_on` is where the water goes in and out; the engine still reads the water
+    from the state. The drain cannot put the full bucket **in the hand** — the pin reverts a water
+    bucket written into the held slot from a click (measured, §1.4) — so it takes the first free
+    slot, and a full inventory refuses the drain. A flowing fluid and a dispenser do not waterlog
+    the block (§7).
 
 ### Upstream defects fixed
 
@@ -304,15 +342,67 @@ test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 (`sdk-test.log`.) The dependency red is the launcher's refusal
 (`sdk-dependency-refusal.log`), and the in-game reds are the two new selftest legs below.
 
+### 4.3 The 0.2.3 slice's red → green (waterlogging)
+
+The four waterlog rules were written first, against `todo!()` stubs, with the 33 carried tests
+running unchanged; only the new family failed:
+
+```
+$ cargo test
+test runtime::tests::a_water_bucket_fills_a_dry_block_and_refuses_a_full_one ... FAILED
+test runtime::tests::an_empty_bucket_drains_a_waterlogged_block_and_refuses_a_dry_one ... FAILED
+test runtime::tests::anything_but_a_bucket_is_not_a_water_click ... FAILED
+test runtime::tests::only_the_property_true_is_waterlogged ... FAILED
+thread 'runtime::tests::a_water_bucket_fills_a_dry_block_and_refuses_a_full_one' panicked at src/runtime.rs:195:5:
+not yet implemented: slice 0.2.3: a full bucket fills a dry machine, an empty one drains a waterlogged one
+test result: FAILED. 33 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+(`ports/_shared/evidence/industrialforegoingsouls/sdk-test-red-waterlog.log`, four `not yet
+implemented: slice 0.2.3`.) The drain's destination rule was written second, when the in-game leg
+showed the pin reverting a water bucket in the held slot, and its own red came first too:
+
+```
+$ cargo test
+test runtime::tests::a_drained_bucket_lands_in_the_first_free_slot_but_not_the_hand ... FAILED
+thread 'runtime::tests::a_drained_bucket_lands_in_the_first_free_slot_but_not_the_hand' panicked at src/runtime.rs:218:5:
+not yet implemented: slice 0.2.3: the drain's full bucket needs a free slot that is not the held one
+test result: FAILED. 37 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+(`sdk-test-red-waterlog-drain.log`.) Green:
+
+```
+$ cargo test
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+(`sdk-test.log`.) The content red was the carry tool's own (`assemble_content.py --check` answered
+`writes 56 files`/`CONTENT OK: 56 files` after the two declarations and the surge's 12-variant
+blockstate), and the in-game reds were the leg's: phase G's 400-tick window and the `block_prop`
+helper (below), then the drain's bucket.
+
+**Two harness defects this slice found and fixed** (both are the scenario's, not the port's):
+
+- **`block_prop` only ever answered for the first property of a state.** `sed "s/.*\[$4=..."` on
+  `soul_network_pipe[down=false,…,waterlogged=false,west=false]` printed nothing, and phase G had
+  only ever asked for `facing`/`age`, which happen to be first. It now splits the bracket body and
+  matches the name with `awk`.
+- **Phase G's 400-tick window was a 6.4 % coin flip.** The surge's tick lands about one game tick in
+  four (measured: 95 decrements per 414 game ticks), so 400 ticks is ~95 surge ticks and a 3 % roll
+  has a 6.4 % chance of no hit at all — the first 0.2.3 run hit exactly that (`age 0`). The window
+  is now 1,200 ticks (~275 surge ticks, ~0.02 %), and the same leg then grew the wheat to age 7.
+
 ## 5. In-game evidence (fail-capable)
 
 `ports/_shared/evidence/industrialforegoingsouls-e2e/`, all through `tools/e2e-two-mod.sh` (one game
-carrying this port **and** its parent, 0.2.8 when the legs ran). The 0.2.0 legs are kept with a
-`-0.2.0` suffix and the 0.2.1 ones with `-0.2.1`; the unsuffixed logs are this 0.2.2 run:
+carrying this port **and** its parent, `industrialforegoing` 0.2.10 when these legs ran). The 0.2.0
+legs are kept with a `-0.2.0` suffix and the 0.2.1 ones with `-0.2.1`; the unsuffixed logs are this
+0.2.3 run:
 
 | leg | verdict | what it proves |
 |---|---|---|
-| `e2e-launcher.log` (0.2.2) | **`PASS` + `EXIT:0`** | the whole 0.2.2 scenario, phases A–N, D2–D3, K–L, P–Q and M2 |
+| `e2e-launcher.log` (0.2.3) | **`PASS` + `EXIT:0`** | the whole 0.2.3 scenario, phases A–N, D2–D3, R, K–L, P–Q and M2 |
 | `e2e-launcher-control.log` | `FAIL: the game refused industrialforegoingsouls:soul_laser_base` + `EXIT:1` | the same script on the same Nightly **without** the package |
 | `e2e-launcher-selftest.log` | `FAIL: selftest: the soul tank is 0, expected anything but 0` + `EXIT:1` | the lens differential can fail |
 | `e2e-launcher-selftest-augment.log` | `FAIL: selftest: the shortened bar gained 22 souls, expected no more than the plain bar's 16` + `EXIT:1` | the augment's rate differential can fail |
@@ -320,9 +410,11 @@ carrying this port **and** its parent, 0.2.8 when the legs ran). The 0.2.0 legs 
 | `e2e-launcher-selftest-grow.log` | `FAIL: selftest: the control wheat's age is 0, expected it above 0` + `EXIT:1` | the acceleration differential can fail |
 | `e2e-launcher-selftest-carry.log` | `FAIL: selftest: the restored tank is 30, expected 0` + `EXIT:1` | the carried contents are real, not a stale machine |
 | `e2e-launcher-selftest-replace.log` | `FAIL: selftest: the lens the swap returned is 1, expected 0` + `EXIT:1` | the replaced lens is returned, not voided |
+| `e2e-launcher-selftest-waterlog.log` | `FAIL: selftest: the pipe's waterlogged state is true, expected false` + `EXIT:1` | the water the bucket puts in is real, not a readout |
 
 `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` →
-`logs=15 ok=15 missing-exit=0 bad-exit=0` (four 0.2.0, six 0.2.1, five 0.2.2).
+`logs=16 ok=16 missing-exit=0 bad-exit=0` (four 0.2.0, three 0.2.1, and the nine unsuffixed legs of
+this run: the green one, the control and the seven selftests).
 
 **The lens differential**, the assertion the whole mod hangs on, from the transcript:
 
@@ -338,12 +430,36 @@ Soul Laser Base at [194, 101, 0]: souls 10/1350, progress 2/20,  lens none, ward
 and the surge's, with `random_tick_speed 0` so nothing grows on its own:
 
 ```
-Soul Surge at [202, 102, -1]: network 3/4, wait 293/300, facing north, powered false, t=674
-Soul Surge at [202, 102, -1]: network 2/4, wait 200/300, facing north, powered false, t=1087
-  after 400 ticks: accelerated wheat age 4, control age 0, surge wait 200/300
-Soul Surge at [202, 102, -1]: network 2/4, wait 185/300, facing north, powered true,  t=1114
-  powered: wait frozen at 172; unpowered again
+Soul Surge at [202, 102, -1]: network 3/4, wait 293/300, facing north, waterlogged false, powered false, t=1068
+Soul Surge at [202, 102, -1]: network 0/4, wait 0/300,   facing north, waterlogged false, powered false, t=2336
+  after 1200 ticks: accelerated wheat age 7, control age 0, surge wait 0/300
 ```
+
+**The waterlogging transcript**, phase R of the 0.2.3 leg — the state, the bucket, the network and
+the surge, with the dry read as the counterfactual:
+
+```
+  Soul Pipe at [208, 101, 3]: network 0/4, waterlogged false, t=2537
+  a fresh pipe is dry (waterlogged false), network 0/4
+  Soul Pipe at [208, 101, 3]: network 0/4, waterlogged true, t=2581
+  hand after the pour: {"minecraft:bucket":1}
+  a water bucket: waterlogged true, the hand now holds the empty bucket
+  Soul Laser Base at [207, 101, 3]: souls 46/1350, progress 10/20, lens none, augments efficiency 1.00, warden none, t=2614
+  Soul Pipe at [208, 101, 3]: network 4/4, waterlogged true, t=2629
+  the waterlogged pipe pulled the seeded 50 down to 46 into a 4/4 network
+  Soul Pipe at [208, 101, 3]: network 4/4, waterlogged false, t=2692
+  hand after the drain: {"minecraft:water_bucket":1}
+  an empty bucket: waterlogged false, the water bucket back in the inventory
+  Soul Surge at [204, 101, -6]: network 3/4, wait 292/300, facing north, waterlogged true, powered false, t=2730
+  Soul Surge at [204, 101, -6]: network 3/4, wait 256/300, facing north, waterlogged true, powered false, t=2766
+  a waterlogged surge reads its state back, spends a soul and runs (292 -> 256/300)
+  Soul Surge at [202, 101, -6]: network 0/0, wait 0/300, facing north, waterlogged false, powered false, t=2788
+  the laser base refuses a waterlogged state by the game's own parser
+```
+
+The seed's own reply (`Soul Laser Base at [207, 101, 3]: souls 50/1350.`) is in the log above the
+readback, so `50 → 46` is the pipe's four, and no warden is anywhere near that machine (it has no
+lens either): the only writer of that tank is the pipe.
 
 **The augment differential**, from the 0.2.1 transcript — the bar's own denominator moves, and the
 rate with it:
@@ -405,8 +521,8 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
 | pipe network 4 a pipe, 4-pull from the machine | **tested** — phase E: 50 → 46 with one pipe (4/4), 46 → 42 with two (8/8); the walk is set-based, bounded and once a tick (`a_two_hundred_pipe_line_is_walked_once_a_tick`, `a_network_walk_stops_at_the_budget`, `a_cached_component_keeps_the_ticks_transfer`) |
 | the pipe's shape and joins | **carried** — `chorus_plant` template + `connects_to` (not asserted in game; the state string shows `east=true` next to its neighbour) |
 | surge placement (`state_for_placement` → `facing` from the clicked face) | **tested** — phase F: a top-face placement reads `facing=up` |
-| surge spends one soul for 300 ticks | **tested** — phase G: network 3 → 2, `wait` 293 → 200 over 400 ticks |
-| surge random-ticks the block it is mounted on | **tested** — phase G: wheat age 4 with `random_tick_speed 0`, control 0 |
+| surge spends one soul for 300 ticks | **tested** — phase G: network 3 → 2, `wait` 293 → 0 over 1,200 ticks |
+| surge random-ticks the block it is mounted on | **tested** — phase G: wheat age 7 with `random_tick_speed 0`, control 0 (1,200-tick window, so a 3 % roll cannot miss) |
 | surge disabled while powered | **tested** — phase H: `powered true`, `wait` frozen, then false again |
 | the three recipes | **tested** — phase K: ids and counts (8 pipes), ingredients consumed, grid empty; a vanilla stand-in grid crafts nothing |
 | loot tables | **tested** — phase L: each block breaks in survival and drops itself |
@@ -416,6 +532,7 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
 | a second catalyst lens replacing the seated one | **tested** — phase Q: the machine keeps one lens and the first comes back to the inventory (`held 1`); `SELFTEST=replace` fails on the returned lens |
 | `laser_drill_ore/echo_shard` + the `deep_dark` biome tag | **tested** — phase M2: the parent's ore laser base reads `11/11` recipes, resolves `industrialforegoingsouls:laser_drill_ore/echo_shard` only in `minecraft:deep_dark` at depth 0, and one completed bar yields `minecraft:echo_shard x1` for 1,000 FE |
 | the recipe advancement | **carried** — the jar's own, loaded without error (the launch's load-error count is 0) |
+| waterlogging on the pipe and the surge | **tested** — phase R: a fresh pipe reads `waterlogged=false` and `0/4`; a water-bucket click makes it `true` and leaves the empty bucket in the hand; the waterlogged pipe still pulls the laser base `50 → 46` into `4/4`; an empty-bucket click makes it `false` and puts the water bucket in the inventory; a surge set to `[facing=north,waterlogged=true]` reads both properties back and spends a soul (`3/4`, `wait 292 → 256`); a dry surge reads `false`; `SELFTEST=waterlog` fails on the state. The interface-gated half is `blocked(no-waterlogged-interface)` |
 | Sculk Soul Tank screen addon | **not ported** — parent GUI |
 | surge BE / entity branches | **blocked** — `no-tick-another-block-entity`, `no-entity-tick` |
 | config file | **not ported** — constants |
@@ -432,6 +549,16 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
   `block_entity` read APIs are the whole surface.
 - `blocked(no-block-state-write-outside-set-block)` — for a machine that keeps state in its block
   entity, rewriting its own state recreates it.
+- `blocked(no-waterlogged-interface)` — a content block's interface set is its template's, so a block
+  of this package cannot answer `instanceof SimpleWaterloggedBlock`: a **flowing fluid** next to the
+  pipe does not fill it and a **dispenser** does not either (both ask the interface). The state, the
+  engine's water fluid state and the player's bucket are ported; the jar's `getStateForPlacement`
+  override (placing the block *into* water) is not in `FINDINGS.md` and was not invented. Issue shape:
+  "a content block may declare the waterloggable interface, or the engine can see a declared
+  `waterlogged` property as one".
+- **The drained bucket goes to the inventory, not the hand** — the pin reverts a water bucket written
+  into the held slot from a click (measured 2026-11-23, §1.4); `runtime::bucket_destination` picks the
+  first free slot instead. A user notices the bucket appear one slot over.
 
 Closed by 0.2.1: ~~`blocked(missing-parent-recipe-type: industrialforegoing:laser_drill_ore)`~~ — the
 parent's 0.2.7 registers the type and this package now carries its own recipe for it.
@@ -442,6 +569,11 @@ Closed by 0.2.2: ~~a broken machine does not carry its contents~~ — `block_dro
 ~~the parent is undeclared~~ — `[dependencies]` now names it (the refusal log above); ~~the pipe
 walk is cubic~~ — set-based, bounded and cached once a tick (§1.3 item 3).
 
+Closed by 0.2.3: ~~waterlogging on the pipe and the surge is not ported~~ — both declare the
+`waterlogged` state, the engine derives the water from it, and the block's own click fills and drains
+it with a bucket (phase R). The interface-gated half (a flowing fluid, a dispenser) is
+`blocked(no-waterlogged-interface)` above.
+
 Still open:
 
 - **The augment slots have no screen.** Upstream's two slots are Titanium's GUI; this port seats and
@@ -450,7 +582,12 @@ Still open:
 
 ## 8. The ladder (evidence index)
 
-`ports/_shared/evidence/industrialforegoingsouls/`:
+`ports/_shared/evidence/industrialforegoingsouls/`. Logs with a version suffix are kept as they
+were; the shared names (`sdk-test.log`, `sdk-clippy*.log`, `sdk-check*.log`) always hold the **newest**
+run, so the 0.2.2 numbers in the first table below are that run's record (its package and check
+output survive in the `-review` logs, and its 33-test log was replaced at 0.2.3).
+
+**The 0.2.2 ladder (historical):**
 
 | step | command | result | log |
 |---|---|---|---|
@@ -468,25 +605,44 @@ Still open:
 | in-game | `tools/e2e-two-mod.sh run` | `PASS` + `EXIT:0`, phases A–Q + M2 | `industrialforegoingsouls-e2e/e2e-launcher.log` |
 | control | the same script on `GAME=$CONTROL_GAME` | `FAIL: the game refused industrialforegoingsouls:soul_laser_base` + `EXIT:1` | `…/e2e-launcher-control.log` |
 | selftest ×6 | `SELFTEST=1`, `augment`, `laser`, `grow`, `carry`, `replace` | `FAIL` + `EXIT:1` each | `…/e2e-launcher-selftest{,-augment,-laser,-grow,-carry,-replace}.log` |
-| log gate | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=15 ok=15 missing-exit=0 bad-exit=0` | — |
+| log gate | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=16 ok=16 missing-exit=0 bad-exit=0` | — |
+
+The **0.2.3** rows of the same table (the waterlogging slice):
+
+| step | command | result | log |
+|---|---|---|---|
+| red (waterlog rules) | `cargo test`, the four new rules at `todo!()` | **33 passed, 4 failed** (`not yet implemented: slice 0.2.3`) | `sdk-test-red-waterlog.log` |
+| red (drain destination) | `cargo test`, `bucket_destination` at `todo!()` | **37 passed, 1 failed** | `sdk-test-red-waterlog-drain.log` |
+| tests | `cargo test --locked --offline` | **38 passed, 0 failed** | `sdk-test.log` |
+| fmt + lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | `FMT-CLEAN`, `CLIPPY-CLEAN` | `sdk-clippy-waterlog.log` |
+| content | `python3 tools/assemble_content.py --check` | `CONTENT OK: 56 files` (two declarations + the surge's 12 variants) | — |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` ×2, the SDK-generated lock removed from each archive | `CMP-IDENTICAL`, sha256 `68b1485e…88b8`, **101,380 B**, 63 entries, no `Cargo.lock` | `sdk-build-waterlog.log` |
+| check | `cargo horizon-mod check industrialforegoingsouls.hmod` | `industrialforegoingsouls 0.2.3 (native-mod, …)`, 101,380 B, exit 0 | `sdk-check-waterlog.log` |
+| fits (pin) | `… fits … --build 0a875da` | `0a875da  made for` | `sdk-check-waterlog.log` |
+| fits (other) | `… fits … --build 0b14f8a` | `0b14f8a  fits` | `sdk-check-waterlog.log` |
+| package gate | `python3 ports/tools/verify-sdk-package.py industrialforegoingsouls` | **1/1** (38 tests, package = tree) | — |
+| launcher build | `tools/e2e-two-mod.sh build` (stale `native-0a875da-f52cbec4dbd6` tag and the export removed first) | `Compiling industrialforegoing (1 of 2)`, **`Compiling industrialforegoingsouls (2 of 2)`**, carries 0.2.10 + 0.2.3 | `industrialforegoingsouls/e2e-two-mod-build.log` |
+| in-game | `tools/e2e.sh` on that build (A–R, D2–D3, K–L, P–Q, M2) | `PASS` + `EXIT:0` | `…-e2e/e2e-launcher.log` |
+| control + selftest ×7 | `GAME=$CONTROL_GAME`, `SELFTEST=1`, `augment`, `laser`, `grow`, `carry`, `replace`, `waterlog` | `FAIL` + `EXIT:1` each, at the intended assertion | `…-e2e/e2e-launcher-control.log`, `…-selftest{,-augment,-laser,-grow,-carry,-replace,-waterlog}.log` |
 
 ## 9. Files
 
 ```
 Cargo.toml, horizon-mod.toml, LICENSE, README.md, .gitignore
-industrialforegoingsouls.hmod     delivered package (96,432 B, sha256 7397e359…0e16)
+industrialforegoingsouls.hmod     delivered package (101,380 B, sha256 68b1485e…88b8)
 SLICE-PLAN-0.2.1.md               the first slice's plan (families, assertions, TDD order)
 SLICE-PLAN-0.2.2.md               the carrying slice's plan
+SLICE-PLAN-0.2.3.md               the waterlogging slice's plan (the pin's measurements, TDD order)
 REVIEW-FIXES-0.2.2.md             the reviewer's four findings and how each is answered
 src/lib.rs                        the one impl Hooks + the three Parts
-src/runtime.rs                    the pure economy and the network cache, 33 tests
+src/runtime.rs                    the pure economy, the network cache and the waterlogging rules, 38 tests
 assets/industrialforegoingsouls/  blockstates, models, item definitions, block textures, lang
 data/industrialforegoingsouls/    block declarations, creative tab, loot, recipes, tags, advancements
 data/c/…, data/minecraft/tags/…   this port's declarations of the convention tags it needs
 tools/assemble_content.py         jar -> assets/data, re-spelled for 26.3 (`--check` proves it)
 tools/craft_recipe.py             the three recipes + the stand-in control, in a real table
 tools/parse_info.py               `/industrialforegoingsouls info` -> shell fields
-tools/e2e.sh                      the in-game scenario (A–Q, D2–D3 the augment, P the carried contents, Q the lens swap, M2 the parent laser)
+tools/e2e.sh                      the in-game scenario (A–R, D2–D3 the augment, P the carried contents, Q the lens swap, R the waterlogging, M2 the parent laser)
 tools/parse_laser.py              the parent machine's `/industrialforegoing info` parser (its own, copied)
 tools/e2e-two-mod.sh              builds the two-mod game (this port + its parent) and runs it
 notes.md, FINDINGS.md, VALIDATION.md

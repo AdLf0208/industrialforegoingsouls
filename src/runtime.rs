@@ -128,6 +128,97 @@ pub fn lens_fits(item: &str) -> bool {
 /// network again once the component shrinks.
 pub const MAX_NETWORK_PIPES: usize = 4096;
 
+// -----------------------------------------------------------------------
+// Waterlogging (`SimpleWaterloggedBlock`, slice 0.2.3)
+// -----------------------------------------------------------------------
+
+/// The state property a waterlogged block of this mod declares. Upstream's `SimpleWaterloggedBlock`
+/// spells it `waterlogged`, and the engine reads a state's water from this *name* (see `notes.md`).
+pub const WATERLOGGED: &str = "waterlogged";
+/// A full bucket, the item whose click fills a dry machine
+/// (`BucketItem.emptyContents` against a liquid container).
+pub const WATER_BUCKET: &str = "minecraft:water_bucket";
+/// An empty bucket, the item whose click drains a waterlogged one (`BucketPickup.pickupBlock`).
+pub const BUCKET: &str = "minecraft:bucket";
+
+/// Whether a machine of this mod holds the water in its own state, as vanilla's `WATERLOGGED`
+/// boolean does. A typed value rather than a `bool`, so a call site reads as the state it writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Waterlogged {
+    /// Nothing in the state: the dry block.
+    #[default]
+    Dry,
+    /// The block holds a water source.
+    Holding,
+}
+
+impl Waterlogged {
+    /// The state's saved value: only `true` is waterlogged, exactly as vanilla reads its own
+    /// boolean (`getValue(WATERLOGGED)`); a missing or unknown value is dry.
+    #[must_use]
+    pub fn from_property(value: Option<&str>) -> Self {
+        match value {
+            Some("true") => Self::Holding,
+            _ => Self::Dry,
+        }
+    }
+
+    /// The value the property is written with.
+    #[must_use]
+    pub fn property(self) -> &'static str {
+        match self {
+            Self::Dry => "false",
+            Self::Holding => "true",
+        }
+    }
+
+    /// Whether the block holds water.
+    #[must_use]
+    pub fn holds_water(self) -> bool {
+        self == Self::Holding
+    }
+}
+
+/// What one bucket click does to a machine of this mod, worked out from the item and the state
+/// **before** anything is written, so a refused click changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaterClick {
+    /// A full bucket on a dry machine: the water goes into the state.
+    Fill,
+    /// An empty bucket on a waterlogged machine: the water comes back out.
+    Drain,
+}
+
+/// `SimpleWaterloggedBlock.canPlaceLiquid`/`pickupBlock` as a click: a water bucket fills a **dry**
+/// machine (vanilla refuses one that is already waterlogged, `!state.getValue(WATERLOGGED)`), an
+/// empty bucket drains a **waterlogged** one (a dry one gives nothing), and every other item is no
+/// water click at all.
+#[must_use]
+pub fn water_click(item: &str, state: Waterlogged) -> Option<WaterClick> {
+    match (item, state) {
+        (WATER_BUCKET, Waterlogged::Dry) => Some(WaterClick::Fill),
+        (BUCKET, Waterlogged::Holding) => Some(WaterClick::Drain),
+        _ => None,
+    }
+}
+
+/// The slot an empty-bucket drain hands its full bucket into: the first free hotbar or
+/// main-inventory slot that is not the clicking hand, then the off hand; `None` when the inventory
+/// is full, so the drain is refused rather than throwing the water away.
+///
+/// Vanilla's `ItemUtils.createFilledResult` puts the filled bucket **in the hand** the empty one
+/// leaves. This pin reverts a water bucket written into the held slot from a block's `use_item_on`
+/// (measured 2026-11-23: the slot holds it inside the hook and an empty bucket again a few ticks
+/// later, through both `set_inventory_slot` and `give_stack`, while the same write to a main
+/// inventory slot persists and a plain item in the held slot persists too). So the water goes to
+/// the inventory instead, and `notes.md` records the difference.
+#[must_use]
+pub fn bucket_destination(occupied: &[u32], hand_slot: u32) -> Option<u32> {
+    (0..=35)
+        .chain(std::iter::once(40))
+        .find(|slot| *slot != hand_slot && !occupied.contains(slot))
+}
+
 /// The slot a replaced catalyst lens goes back into: the clicking hand's own slot when it holds a
 /// single item (it empties), otherwise the first empty hotbar or main-inventory slot, then the off
 /// hand. `None` when the inventory is full, so the click is refused instead of voiding the lens.
@@ -890,6 +981,108 @@ mod tests {
             "the cut also bounds the probes: {probes}"
         );
         assert_eq!(positions[0], [0, 0, 0]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Waterlogging (`SimpleWaterloggedBlock`)
+    // -----------------------------------------------------------------------
+
+    /// A full bucket fills a dry machine and is refused by a waterlogged one:
+    /// `SimpleWaterloggedBlock.canPlaceLiquid` is `!state.getValue(WATERLOGGED)`.
+    #[test]
+    fn a_water_bucket_fills_a_dry_block_and_refuses_a_full_one() {
+        assert_eq!(
+            water_click(WATER_BUCKET, Waterlogged::Dry),
+            Some(WaterClick::Fill),
+            "a full bucket empties into a dry block"
+        );
+        assert_eq!(
+            water_click(WATER_BUCKET, Waterlogged::Holding),
+            None,
+            "a block already waterlogged takes nothing"
+        );
+        assert!(!Waterlogged::Dry.holds_water());
+    }
+
+    /// An empty bucket drains a waterlogged machine and gets nothing from a dry one
+    /// (`BucketPickup.pickupBlock`).
+    #[test]
+    fn an_empty_bucket_drains_a_waterlogged_block_and_refuses_a_dry_one() {
+        assert_eq!(
+            water_click(BUCKET, Waterlogged::Holding),
+            Some(WaterClick::Drain),
+            "an empty bucket takes the water out"
+        );
+        assert_eq!(
+            water_click(BUCKET, Waterlogged::Dry),
+            None,
+            "a dry block gives no water"
+        );
+        assert!(Waterlogged::Holding.holds_water());
+    }
+
+    /// Nothing but a bucket is a water click: the lens and the augment clicks pass through, and an
+    /// empty hand is `use_without_item`'s, not this rule's.
+    #[test]
+    fn anything_but_a_bucket_is_not_a_water_click() {
+        for item in [
+            LENS,
+            "minecraft:air",
+            "minecraft:water_bottle",
+            "industrialforegoing:efficiency_addon_tier_2",
+        ] {
+            assert_eq!(water_click(item, Waterlogged::Dry), None, "{item}");
+            assert_eq!(water_click(item, Waterlogged::Holding), None, "{item}");
+        }
+    }
+
+    /// The drain's full bucket goes to the first free slot that is not the clicking hand, and never
+    /// to a slot that already holds something; a full inventory refuses the drain.
+    #[test]
+    fn a_drained_bucket_lands_in_the_first_free_slot_but_not_the_hand() {
+        assert_eq!(
+            bucket_destination(&[0], 0),
+            Some(1),
+            "the hand is not a destination: the emptied slot is where vanilla would put it"
+        );
+        assert_eq!(
+            bucket_destination(&[0, 1, 2], 0),
+            Some(3),
+            "the first free slot after the hand"
+        );
+        assert_eq!(
+            bucket_destination(&[0, 1, 41], 2),
+            Some(3),
+            "a free hand slot is skipped for the next free one"
+        );
+        let full: Vec<u32> = (0..=35).collect();
+        assert_eq!(
+            bucket_destination(&full, 0),
+            Some(40),
+            "the off hand is a destination after the main inventory"
+        );
+        let everything: Vec<u32> = (0..=35).chain([40]).collect();
+        assert_eq!(
+            bucket_destination(&everything, 0),
+            None,
+            "a full inventory refuses the drain rather than losing the water"
+        );
+    }
+
+    /// The state's own value: only `true` is waterlogged, and the two states spell themselves the
+    /// way the property is written.
+    #[test]
+    fn only_the_property_true_is_waterlogged() {
+        assert_eq!(
+            Waterlogged::from_property(Some("true")),
+            Waterlogged::Holding
+        );
+        assert_eq!(Waterlogged::from_property(Some("false")), Waterlogged::Dry);
+        assert_eq!(Waterlogged::from_property(None), Waterlogged::Dry);
+        assert_eq!(Waterlogged::from_property(Some("")), Waterlogged::Dry);
+        assert_eq!(Waterlogged::Holding.property(), "true");
+        assert_eq!(Waterlogged::Dry.property(), "false");
+        assert_eq!(Waterlogged::default(), Waterlogged::Dry);
     }
 
     /// The cached component keeps this tick's transfer, including the ticking pipe's own value.

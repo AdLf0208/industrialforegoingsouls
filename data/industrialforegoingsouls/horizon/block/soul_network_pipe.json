@@ -7,6 +7,11 @@
     "requires_tool": true,
     "sounds": "minecraft:iron_block"
   },
+  "state_properties": {
+    "waterlogged": {
+      "type": "boolean"
+    }
+  },
   "template": "minecraft:chorus_plant",
   "thickness": 6
 }

@@ -133,6 +133,10 @@ def build() -> dict[str, bytes]:
             "connects_to": f"#{MOD}:soul_connects",
             "item": True,
             "properties": iron,
+            # `SoulPipeBlock` is a `SimpleWaterloggedBlock`: the property is the water it holds. A
+            # content block's interface set is its template's, so the *interactions* are the block's
+            # own click (src/lib.rs `waterlog_click`), not the engine's bucket path.
+            "state_properties": {"waterlogged": {"type": "boolean"}},
             "template": "minecraft:chorus_plant",
             "thickness": 6,
         },
@@ -147,7 +151,9 @@ def build() -> dict[str, bytes]:
                 "facing": {
                     "type": "enum",
                     "values": ["north", "south", "east", "west", "up", "down"],
-                }
+                },
+                # `SoulSurgeBlock` declares `WATERLOGGED` as well (FINDINGS.md).
+                "waterlogged": {"type": "boolean"},
             },
             "template": "minecraft:iron_block",
         },
@@ -194,7 +200,9 @@ def build() -> dict[str, bytes]:
         },
     )
     # The surge's own six-way rotation, from the jar's `enabled=true` variants; the `off` and
-    # connection pieces belong to properties this port does not declare.
+    # connection pieces belong to properties this port does not declare. Every state is named:
+    # the engine binds a variant key to the states it matches, so a `facing` key that left
+    # `waterlogged` out would claim only one of its two states and leave the other without a model.
     turns = {
         "down": {"x": 90},
         "up": {"x": -90},
@@ -207,8 +215,12 @@ def build() -> dict[str, bytes]:
         f"assets/{MOD}/blockstates/soul_surge.json",
         {
             "variants": {
-                f"facing={facing}": {"model": f"{MOD}:block/soul_surge", **turn}
+                f"facing={facing},waterlogged={waterlog}": {
+                    "model": f"{MOD}:block/soul_surge",
+                    **turn,
+                }
                 for facing, turn in turns.items()
+                for waterlog in ("false", "true")
             }
         },
     )

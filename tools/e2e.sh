@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# In-game check for Industrial Foregoing: Souls 0.2.2 — the one soul economy, its efficiency
-# augment, and the parent laser machinery's use of its ore recipe.
+# In-game check for Industrial Foregoing: Souls 0.2.3 — the one soul economy, its efficiency
+# augment, its waterlogging, and the parent laser machinery's use of its ore recipe.
 #
 # The Soul Laser Base seats `industrialforegoing:blue_laser_lens` in its catalyst slot and, with a
 # warden inside the box above it, turns 20 ticks into 4 damage and 2 souls; the Soul Pipe pulls 4 a
@@ -16,6 +16,11 @@
 #
 # Every mod command is typed with `ctl chat "/cmd"` because `ctl command` runs the console path and
 # bypasses the native `perform_command` hook.
+#
+# Phase R proves the waterlogging upstream's `SimpleWaterloggedBlock` gives both the pipe and the
+# surge: the state is declared (`waterlogged`), the engine reads water from it, and the block's own
+# click fills and drains it with a bucket — the interface itself is a template's, which a content
+# block cannot attach (`notes.md` §3 has the measurement).
 #
 # The package is one flat `.hmod` (code and content together), so the game must be one the launcher
 # built with it — no `--dev-mod`:
@@ -37,7 +42,8 @@
 # SELFTEST=carry is slice 3's own leg: phase P asserts that a machine broken with its lens and its
 # efficiency addon comes back **empty** — souls 0, lens none — which must fail against a package
 # that carries them. SELFTEST=replace inverts phase Q: a second lens must void the first one, which
-# must fail against a package that hands it back.
+# must fail against a package that hands it back. SELFTEST=waterlog inverts phase R: the water bucket
+# must have left the pipe dry, which fails against a package whose click fills it.
 set -Eeuo pipefail
 export LC_ALL=C
 [ -z "${IF_DEBUG:-}" ] || set -x
@@ -86,7 +92,12 @@ rm -f "$SOCK"
 
 ctl() { "$CTL" --socket "$SOCK" --timeout 180 "$@"; }
 say() { ctl chat "/$1" >/dev/null; }
-fail() { echo "FAIL: $*" >&2; ctl logs --lines 60 >&2 || true; exit 1; }
+fail() {
+    echo "FAIL: $*" >&2
+    echo "  inventory: $(ctl inventory 2>/dev/null | jq -c '.counts' 2>/dev/null || true)" >&2
+    ctl logs --lines 60 >&2 || true
+    exit 1
+}
 on_error() { echo "FAIL: line $1: '$2' exited $?" >&2; ctl logs --lines 40 >&2 || true; }
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
@@ -110,8 +121,14 @@ launch() { # launch [WORLD]
     ctl wait 40
 }
 
-block_prop() {
-    ctl block "$1" "$2" "$3" | jq -r '.state // ""' | sed -n "s/.*\[$4=\([^],]*\).*/\1/p"
+# One property of the state string `ctl block` returns. The properties are sorted, so the key asked
+# for is not always the first one: split the bracket body on commas and match the name (the 0.2.3
+# run found this the hard way — the old `sed` only ever answered for the first property, which
+# `facing` and `age` happened to be).
+block_prop() { # block_prop X Y Z PROPERTY
+    ctl block "$1" "$2" "$3" | jq -r '.state // ""' \
+        | tr -d ']' | tr ',' '\n' \
+        | awk -F= -v k="$4" '{ sub(/^.*\[/, "", $1); if ($1 == k) print $2 }'
 }
 block_name() { ctl block "$1" "$2" "$3" | jq -r '.name // .block // empty'; }
 held() { ctl inventory | jq -r --arg item "$1" '.counts[$item] // 0'; }
@@ -586,12 +603,16 @@ expect "the surge's network" "$NETWORK" 3
 expect "the surge's network capacity (one pipe)" "$NET_CAP" 4
 [ "$WAIT" -lt 300 ] || fail "the surge bought no accelerated ticks from the network: wait $WAIT"
 say "industrialforegoingsouls wait $AX 102 -1 300"
-ctl wait 400 >/dev/null
+# 1,200 game ticks, not 400: the surge's tick lands roughly one game tick in four (measured: 95
+# decrements per 414 ticks), so a 400-tick window gives ~95 surge ticks and a 3% roll leaves a
+# **6.4%** chance that nothing is accelerated at all — the 0.2.3 run hit exactly that window and the
+# wheat stayed at age 0. 1,200 ticks is ~275 surge ticks, where the chance of no roll is ~0.02%.
+ctl wait 1200 >/dev/null
 info "$AX" 102 -1
 [ "$WAIT" -lt 300 ] || fail "the surge's 300 ticks did not fall under acceleration: $WAIT"
 AGE_A=$(block_prop "$AX" 102 0 age)
 AGE_B=$(block_prop "$BX" 102 0 age)
-echo "  after 400 ticks: accelerated wheat age $AGE_A, control age $AGE_B, surge wait $WAIT/300"
+echo "  after 1200 ticks: accelerated wheat age $AGE_A, control age $AGE_B, surge wait $WAIT/300"
 [ "$AGE_A" -gt 0 ] || fail "the surged wheat never grew (age $AGE_A)"
 if [ "$SELFTEST" = grow ]; then
     echo "(selftest: asserting the control wheat grew)"
@@ -613,6 +634,136 @@ ctl wait 10 >/dev/null
 info "$AX" 102 -1
 expect "the surge powered again after the redstone is gone" "$POWERED" "false"
 echo "  powered: wait frozen at $WAIT; unpowered again"
+
+echo "== R: waterlogging on the pipe and the surge =="
+# Both upstream blocks are `SimpleWaterloggedBlock`s: a water bucket fills the state, an empty one
+# takes the water back, and the machine works either way. This port's interface cannot carry the
+# engine's bucket path (a content block's interfaces are its template's), so the click is the block's
+# own, exactly as the lens and the augment seat (`src/lib.rs` `waterlog_click`). The engine still
+# reads the water from the state: `state_fluid_state` answers water for a `waterlogged=true` state.
+#
+# The differential is the network: a **waterlogged** pipe still pulls the laser base's souls, and the
+# hand trades its bucket, which a state-only port (no interaction) could not do.
+WX=208
+BX=207
+WZ=3
+# The surge corner: a stone target to the surge's south, one pipe for its network.
+TX=204
+TZ=-6
+ctl command "difficulty peaceful" >/dev/null
+ctl command "execute in minecraft:the_end run kill @e[type=!player]" >/dev/null
+ctl command "gamemode survival @s" >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 8 >/dev/null
+# The base goes in empty and the pipe beside it, so the pipe can be read dry and filled **before** the
+# tank is seeded: one with souls would be pulled from in the same tick the pipe is placed.
+ctl command "execute in minecraft:the_end run setblock $BX 101 $WZ industrialforegoingsouls:soul_laser_base" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $WX 101 $WZ industrialforegoingsouls:soul_network_pipe" >/dev/null
+ctl wait 8 >/dev/null
+expect "the waterlogging pipe's block" "$(block_name $WX 101 $WZ)" "industrialforegoingsouls:soul_network_pipe"
+expect "the machine the pipe will pull from" "$(block_name $BX 101 $WZ)" "industrialforegoingsouls:soul_laser_base"
+# The counterfactual first: a fresh pipe is dry.
+expect "a fresh pipe's waterlogged state" "$(block_prop $WX 101 $WZ waterlogged)" "false"
+info $WX 101 $WZ
+expect "the dry pipe's readout" "$WATERLOGGED" "false"
+expect "the one-pipe network" "$NETWORK" 0
+expect "the one-pipe capacity" "$NET_CAP" 4
+echo "  a fresh pipe is dry (waterlogged false), network 0/4"
+
+# A full bucket fills it: `SimpleWaterloggedBlock.canPlaceLiquid` on a dry block.
+ctl command "give @s minecraft:water_bucket 1" >/dev/null
+ctl wait 6 >/dev/null
+ctl select minecraft:water_bucket >/dev/null 2>&1 || fail "the water bucket is not in the hotbar"
+ctl command "execute in minecraft:the_end run tp @s $WX.5 101 $((WZ - 2)).5" >/dev/null
+ctl wait 6 >/dev/null
+ctl look-at-block $WX 101 $WZ north >/dev/null 2>&1 || fail "cannot aim at the pipe at $WX,101,$WZ"
+ctl wait 6 >/dev/null
+ctl use-item >/dev/null || fail "the right-click with the water bucket on the pipe failed"
+ctl wait 6 >/dev/null
+expect "the waterlogged pipe's state" "$(block_prop $WX 101 $WZ waterlogged)" "true"
+info $WX 101 $WZ
+expect "the waterlogged pipe's readout" "$WATERLOGGED" "true"
+if [ "$SELFTEST" = waterlog ]; then
+    echo "(selftest: asserting the bucket left the pipe dry)"
+    expect "selftest: the pipe's waterlogged state" "$WATERLOGGED" "false"
+fi
+echo "  hand after the pour: $(ctl inventory | jq -c '.counts')" >&2
+expect "the empty bucket the pour left in the hand" "$(held minecraft:bucket)" 1
+expect "the water bucket the pour used up" "$(held minecraft:water_bucket)" 0
+echo "  a water bucket: waterlogged true, the hand now holds the empty bucket"
+
+# The network still moves souls through the waterlogged pipe: 50 seeded, 4 in the pipe, 46 left. The
+# seed's own reply ("souls 50/1350.") is in the log above the readback.
+say "industrialforegoingsouls souls $BX 101 $WZ 50"
+ctl wait 16 >/dev/null
+info $BX 101 $WZ
+expect "the machine after a waterlogged pipe pulled" "$SOULS" 46
+info $WX 101 $WZ
+expect "the waterlogged pipe's network" "$NETWORK" 4
+expect "the pipe is still waterlogged after the transfer" "$WATERLOGGED" "true"
+echo "  the waterlogged pipe pulled the seeded 50 down to $SOULS into a 4/4 network"
+
+# An empty bucket takes the water back out: `BucketPickup.pickupBlock`.
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+ctl command "give @s minecraft:bucket 1" >/dev/null
+ctl wait 6 >/dev/null
+ctl select minecraft:bucket >/dev/null 2>&1 || fail "the empty bucket is not in the hotbar"
+ctl command "execute in minecraft:the_end run tp @s $WX.5 101 $((WZ - 2)).5" >/dev/null
+ctl wait 6 >/dev/null
+ctl look-at-block $WX 101 $WZ north >/dev/null 2>&1 || fail "cannot aim at the pipe for the drain"
+ctl wait 6 >/dev/null
+ctl use-item >/dev/null || fail "the right-click with the empty bucket on the pipe failed"
+ctl wait 6 >/dev/null
+expect "the drained pipe's state" "$(block_prop $WX 101 $WZ waterlogged)" "false"
+info $WX 101 $WZ
+expect "the drained pipe's readout" "$WATERLOGGED" "false"
+echo "  hand after the drain: $(ctl inventory | jq -c '.counts')" >&2
+expect "the water bucket the drain gave back" "$(held minecraft:water_bucket)" 1
+expect "the empty bucket the drain used up" "$(held minecraft:bucket)" 0
+echo "  an empty bucket: waterlogged false, the water bucket back in the inventory"
+
+# The surge: a state written with the property reads back, and it still spends a soul.
+ctl command "execute in minecraft:the_end run setblock $TX 101 $((TZ + 1)) minecraft:stone" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $TX 101 $TZ industrialforegoingsouls:soul_surge[facing=north,waterlogged=true]" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $((TX + 1)) 101 $TZ industrialforegoingsouls:soul_network_pipe" >/dev/null
+ctl wait 10 >/dev/null
+expect "the surge's waterlogged state read back" "$(block_prop $TX 101 $TZ waterlogged)" "true"
+expect "the surge's facing read back" "$(block_prop $TX 101 $TZ facing)" "north"
+# A surge spends its first soul on the tick it sees one, so the network reads 3 of the 4 seeded and
+# the wait is already falling: that is the soul a waterlogged surge spent (phase G's own shape).
+say "industrialforegoingsouls souls $((TX + 1)) 101 $TZ 4"
+ctl wait 6 >/dev/null
+info $TX 101 $TZ
+expect "the waterlogged surge's readout" "$WATERLOGGED" "true"
+expect "the soul a waterlogged surge spent of the 4 seeded" "$NETWORK" 3
+[ "$WAIT" -lt 300 ] || fail "the waterlogged surge bought no accelerated ticks: wait $WAIT"
+WAIT_BEFORE=$WAIT
+ctl wait 20 >/dev/null
+info $TX 101 $TZ
+[ "$WAIT" -lt "$WAIT_BEFORE" ] \
+    || fail "the waterlogged surge's ticks stopped at $WAIT (was $WAIT_BEFORE)"
+echo "  a waterlogged surge reads its state back, spends a soul and runs ($WAIT_BEFORE -> $WAIT/300)"
+
+# The counterfactual for the surge state: the property is the state's, not the model's.
+ctl command "execute in minecraft:the_end run setblock $((TX - 2)) 101 $TZ industrialforegoingsouls:soul_surge[facing=north,waterlogged=false]" >/dev/null
+ctl wait 8 >/dev/null
+expect "a dry surge's waterlogged state" "$(block_prop $((TX - 2)) 101 $TZ waterlogged)" "false"
+info $((TX - 2)) 101 $TZ
+expect "the dry surge's readout" "$WATERLOGGED" "false"
+
+# The laser base is not waterloggable upstream, and this package declares no such state on it: the
+# game's own parser refuses the property rather than silently taking a default state.
+REFUSED=$(ctl setblock $BX 101 $WZ "industrialforegoingsouls:soul_laser_base[waterlogged=true]" 2>&1 || true)
+case "$REFUSED" in
+    *'"ok":true'*) fail "the laser base accepted a waterlogged state: $REFUSED" ;;
+esac
+expect "the laser base after the refused waterlogged state" "$(block_name $BX 101 $WZ)" "industrialforegoingsouls:soul_laser_base"
+echo "  the laser base refuses a waterlogged state by the game's own parser"
+# Back to creative for the crafting phase, which ran that way before this phase existed.
+ctl command "gamemode creative @s" >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
 
 echo "== K: the carried recipes craft, and the carry is not vacuous =="
 ctl command "execute in minecraft:the_end run fill 216 100 6 222 100 12 minecraft:stone" >/dev/null
@@ -887,4 +1038,4 @@ fi
 expect "this package's ore in the base's output" "$ORY" "minecraft:echo_shard x1"
 echo "  one base bar for the drill's 1,000 FE yielded $ORY"
 
-echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens back freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand, and the seated addon comes back out on an empty hand; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE"
+echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens back freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand, and the seated addon comes back out on an empty hand; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE; and waterlogging is the state's: a fresh pipe reads waterlogged false, a water bucket fills it to true and leaves the empty bucket in the hand, the waterlogged pipe still pulls the laser base 50 -> 46 into a 4/4 network, an empty bucket drains it back to false and hands the water bucket over, a surge set to facing=north,waterlogged=true reads both properties back and still spends a soul on 300 ticks where a dry one reads false, and the laser base, which upstream does not waterlog, refuses the property by the game's own parser"

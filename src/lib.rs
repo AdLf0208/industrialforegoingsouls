@@ -51,15 +51,17 @@ use std::sync::{Mutex, OnceLock};
 use mod_api::{
     BlockDropsEvent, BlockEntityPart, BlockEntityTickEvent, BlockEntityTicksEvent,
     BlockEntityTypeKey, BlockPart, BlockState, Command, CommandArgumentValue, CommandInvocation,
-    Compound, Direction, EntityRef, Flow, Hand, Hooks, Host, Identifier, InteractionResult,
-    ItemKey, ItemPart, ItemStack, LevelHost, LevelRef, OnBlockPlacedByEvent, RandomSource,
-    RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent, ServerHost,
-    StateForPlacementEvent, Tag, Text, UseItemOnEvent, UseWithoutItemEvent,
+    Compound, Direction, EntityRef, Flow, GameEventContext, Hand, Hooks, Host, Identifier,
+    InteractionResult, ItemKey, ItemPart, ItemStack, LevelHost, LevelRef, OnBlockPlacedByEvent,
+    RandomSource, RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent,
+    ServerHost, SoundSource, StateForPlacementEvent, Tag, Text, UseItemOnEvent,
+    UseWithoutItemEvent,
 };
 
 use crate::runtime::{
     LaserBase, MAX_NETWORK_PIPES, MAX_PROGRESS, Network, NetworkCache, SOUL_STORAGE, Surge, Target,
-    Walked, grow_component, lens_fits, pipe_pull, replacement_slot,
+    Walked, WaterClick, Waterlogged, grow_component, lens_fits, pipe_pull, replacement_slot,
+    water_click,
 };
 
 /// The mod's three blocks.
@@ -112,6 +114,10 @@ static SURGE_KIND: OnceLock<BlockEntityTypeKey> = OnceLock::new();
 static WARDEN_KIND: OnceLock<mod_api::EntityTypeKey> = OnceLock::new();
 /// The one item a laser base seats, resolved in `register` so a click can compare against it.
 static LENS_ITEM: OnceLock<ItemKey> = OnceLock::new();
+/// The two buckets a waterlogged machine trades: a full one fills it, an empty one drains it. Both
+/// are resolved in `register` so the click only moves keys.
+static BUCKET_ITEM: OnceLock<ItemKey> = OnceLock::new();
+static WATER_BUCKET_ITEM: OnceLock<ItemKey> = OnceLock::new();
 /// The three items that place the machines. `block_drops` is given a read-only level host and no
 /// game host, so the item it writes the carried payload onto is resolved once in `register`.
 static BASE_ITEM: OnceLock<ItemKey> = OnceLock::new();
@@ -136,6 +142,8 @@ impl Hooks for Mod {
         let pipe_item = r.item_key(PIPE);
         let surge_item = r.item_key(SURGE);
         let _ = LENS_ITEM.set(r.item_key(runtime::LENS));
+        let _ = BUCKET_ITEM.set(r.item_key(runtime::BUCKET));
+        let _ = WATER_BUCKET_ITEM.set(r.item_key(runtime::WATER_BUCKET));
         let _ = WARDEN_KIND.set(r.entity_type_key(WARDEN));
         // `block_drops` writes the carried payload onto these three items and is given no game
         // host, so they are resolved here; the placement hook that puts the payload back is
@@ -491,7 +499,19 @@ impl BlockEntityPart for Laser {
 struct Pipe;
 
 #[mod_api::horizon_part]
-impl BlockPart for Pipe {}
+impl BlockPart for Pipe {
+    /// Right-clicking a dry pipe with a water bucket fills it (and hands back the empty bucket);
+    /// an empty bucket on a waterlogged one takes the water out. Upstream's `SoulPipeBlock` is a
+    /// `SimpleWaterloggedBlock`, and this click is how its water goes in and out at this pin — see
+    /// [`waterlog_click`] and the gap `notes.md` records for the interface itself.
+    fn use_item_on(
+        &self,
+        host: &mut dyn ServerHost,
+        event: &mut UseItemOnEvent<'_>,
+    ) -> Option<InteractionResult> {
+        waterlog_click(host, event)
+    }
+}
 
 #[mod_api::horizon_part]
 impl BlockEntityPart for Pipe {
@@ -578,6 +598,16 @@ impl BlockPart for SurgePart {
             level.state_with_property(event.state, FACING, facing_name(event.context.face))?;
         Some(Some(turned))
     }
+
+    /// A surge is a `SimpleWaterloggedBlock` too, so a bucket click fills or drains it exactly as it
+    /// does a pipe ([`waterlog_click`]).
+    fn use_item_on(
+        &self,
+        host: &mut dyn ServerHost,
+        event: &mut UseItemOnEvent<'_>,
+    ) -> Option<InteractionResult> {
+        waterlog_click(host, event)
+    }
 }
 
 #[mod_api::horizon_part]
@@ -635,6 +665,113 @@ impl BlockEntityPart for SurgePart {
             write_int(&mut event.entity.nbt, KEY_WAIT, wait);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Waterlogging (`SimpleWaterloggedBlock`)
+// ---------------------------------------------------------------------------
+
+/// `SimpleWaterloggedBlock`'s two interactions, as the click this port has instead of a GUI: a full
+/// bucket fills a dry pipe or surge and hands the empty one back, an empty bucket drains a
+/// waterlogged one and hands a full one back. Vanilla's `BucketItem.emptyContents`/`BucketPickup`
+/// do the same against a block that carries the interface, with the bucket's own sound and
+/// `minecraft:fluid_place`/`minecraft:fluid_pickup`.
+///
+/// **Why the click and not the interface.** The engine's bucket path asks the block
+/// `instanceof SimpleWaterloggedBlock`, and a content block's interface set is copied from its
+/// template (`minecraft:chorus_plant` for the pipe, `minecraft:iron_block` for the surge); neither
+/// has it, and `connects_to` rewrites the class only. So the state and the water in it are the
+/// engine's (`state_fluid_state` reads the `waterlogged` property generically), while the two
+/// writes are this hook's. `notes.md` records what that leaves out (a flowing fluid, a dispenser).
+///
+/// The state is written **before** the hand, so a state this block no longer has leaves the bucket
+/// where it was; a creative player keeps the bucket they used, as `ItemStack.consume` does. The
+/// drain's full bucket goes to the first free inventory slot rather than the held one: this pin
+/// reverts a water bucket written into the held slot from a click (measured; see
+/// [`runtime::bucket_destination`]).
+fn waterlog_click(
+    host: &mut dyn ServerHost,
+    event: &mut UseItemOnEvent<'_>,
+) -> Option<InteractionResult> {
+    let click = event.click;
+    let stack = click.stack?;
+    if stack.count() == 0 {
+        return None;
+    }
+    let dimension = click.dimension.key().id();
+    let level = host.level(dimension)?;
+    let stored = level.block_property(&*host, click.pos, runtime::WATERLOGGED);
+    let state = Waterlogged::from_property(stored.as_deref());
+    let item = stack.item().id(&*host);
+    let taken = water_click(&item, state)?;
+    let player = host.player(click.player)?;
+    let slot = match click.hand {
+        Hand::Main => u32::try_from(player.selected_slot(&*host)?).ok()?,
+        Hand::Off => 40,
+    };
+    let creative = player.has_infinite_materials(&*host).unwrap_or(false);
+    match taken {
+        // A creative player's water bucket is not used up: the hand keeps it, as `ItemStack.consume`
+        // leaves an infinite-materials player's stack alone.
+        WaterClick::Fill if creative => {
+            if !host.set_block_property(
+                click.pos,
+                runtime::WATERLOGGED,
+                Waterlogged::Holding.property(),
+            ) {
+                return None;
+            }
+        }
+        WaterClick::Fill => {
+            let bucket = ItemStack::new(*BUCKET_ITEM.get()?, 1)?;
+            if !host.set_block_property(
+                click.pos,
+                runtime::WATERLOGGED,
+                Waterlogged::Holding.property(),
+            ) {
+                return None;
+            }
+            player.set_inventory_slot(host, slot, Some(bucket)).ok()?;
+        }
+        WaterClick::Drain => {
+            // Where the water goes must be settled **before** anything is written: a full inventory
+            // refuses the click and the block keeps its water.
+            let occupied: Vec<u32> = player
+                .inventory_slots(&*host)?
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect();
+            let destination = runtime::bucket_destination(&occupied, slot)?;
+            let water = ItemStack::new(*WATER_BUCKET_ITEM.get()?, 1)?;
+            if !host.set_block_property(
+                click.pos,
+                runtime::WATERLOGGED,
+                Waterlogged::Dry.property(),
+            ) {
+                return None;
+            }
+            player.set_inventory_slot(host, slot, None).ok()?;
+            player
+                .set_inventory_slot(host, destination, Some(water))
+                .ok()?;
+        }
+    }
+    let at = [
+        f64::from(click.pos[0]) + 0.5,
+        f64::from(click.pos[1]) + 0.5,
+        f64::from(click.pos[2]) + 0.5,
+    ];
+    let (sound, game_event) = match taken {
+        WaterClick::Fill => ("minecraft:item.bucket.empty", "minecraft:fluid_place"),
+        WaterClick::Drain => ("minecraft:item.bucket.fill", "minecraft:fluid_pickup"),
+    };
+    let _ = level.play_sound(host, sound, at, SoundSource::Blocks, 1.0, 1.0);
+    let context = GameEventContext {
+        source_entity: Some(player.entity()),
+        affected_state: None,
+    };
+    let _ = level.game_event(host, game_event, at, context);
+    Some(InteractionResult::Consume)
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,10 +1218,12 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
                 pos,
                 Some((pos, read_int(&data, KEY_SOULS).max(0) as u32)),
             );
+            let water = waterlogged_at(host, level, pos);
             format!(
-                "Soul Pipe at {pos:?}: network {}/{}, t={time}",
+                "Soul Pipe at {pos:?}: network {}/{}, waterlogged {}, t={time}",
                 network.total(),
-                network.capacity()
+                network.capacity(),
+                water.property()
             )
         }
         Some(kind) if Some(kind) == SURGE_KIND.get().copied() => {
@@ -1092,12 +1231,14 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
             let surge = Surge::from_saved(read_int(&data, KEY_WAIT));
             let facing = level.block_property(host, pos, FACING).unwrap_or_default();
             let powered = level.has_neighbor_signal(&*host, pos);
+            let water = waterlogged_at(host, level, pos);
             format!(
-                "Soul Surge at {pos:?}: network {}/{}, wait {}/{}, facing {facing}, powered {powered}, t={time}",
+                "Soul Surge at {pos:?}: network {}/{}, wait {}/{}, facing {facing}, waterlogged {}, powered {powered}, t={time}",
                 network.total(),
                 network.capacity(),
                 surge.ticking_time,
-                runtime::SOUL_TIME
+                runtime::SOUL_TIME,
+                water.property()
             )
         }
         _ => format!("{pos:?} is not an industrialforegoingsouls block., t={time}"),
@@ -1201,6 +1342,12 @@ fn accelerable(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3]) -> boo
 fn living_health(host: &dyn Host, entity: EntityRef) -> Option<f32> {
     let living = host.living(entity)?;
     living.health(host)
+}
+
+/// The water a block of this mod holds, read from its own state.
+fn waterlogged_at(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Waterlogged {
+    let stored = level.block_property(host, pos, runtime::WATERLOGGED);
+    Waterlogged::from_property(stored.as_deref())
 }
 
 /// The `facing` value a placement takes from the face it was clicked on.

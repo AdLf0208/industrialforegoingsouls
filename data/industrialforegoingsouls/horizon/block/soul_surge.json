@@ -20,6 +20,9 @@
         "up",
         "down"
       ]
+    },
+    "waterlogged": {
+      "type": "boolean"
     }
   },
   "template": "minecraft:iron_block"

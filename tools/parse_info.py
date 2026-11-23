@@ -2,13 +2,13 @@
 """Parse a `/industrialforegoingsouls info` line into shell assignments.
 
     Soul Laser Base at [194, 102, 0]: souls 6/1350, progress 3/20, lens industrialforegoing:blue_laser_lens, augments efficiency 0.80, warden 488.0, t=264
-    Soul Pipe at [195, 102, 0]: network 4/4, t=264
-    Soul Surge at [194, 102, -1]: network 3/8, wait 290/300, facing south, powered false, t=264
+    Soul Pipe at [195, 102, 0]: network 4/4, waterlogged false, t=264
+    Soul Surge at [194, 102, -1]: network 3/8, wait 290/300, facing south, waterlogged false, powered false, t=264
 
 Prints `ok=1` and the fields the line carries (`SOULS=`, `PROGRESS=`,
 `PROGRESS_MAX=`, `LENS=`, `EFFICIENCY=`, `WARDEN=`, `NETWORK=`, `NET_CAP=`,
-`WAIT=`, `WAIT_MAX=`, `FACING=`, `POWERED=`, `T=`), or `ok=0`. The e2e `eval`s
-this.
+`WATERLOGGED=`, `WAIT=`, `WAIT_MAX=`, `FACING=`, `POWERED=`, `T=`), or `ok=0`.
+The e2e `eval`s this.
 """
 
 from __future__ import annotations
@@ -23,11 +23,13 @@ BASE = re.compile(
     r"warden (?P<warden>\S+), t=(?P<t>\d+)$"
 )
 PIPE = re.compile(
-    r"^Soul Pipe at \[.*?\]: network (?P<network>\d+)/(?P<net_cap>\d+), t=(?P<t>\d+)$"
+    r"^Soul Pipe at \[.*?\]: network (?P<network>\d+)/(?P<net_cap>\d+), "
+    r"waterlogged (?P<waterlogged>true|false), t=(?P<t>\d+)$"
 )
 SURGE = re.compile(
     r"^Soul Surge at \[.*?\]: network (?P<network>\d+)/(?P<net_cap>\d+), "
     r"wait (?P<wait>\d+)/(?P<wait_max>\d+), facing (?P<facing>\S+), "
+    r"waterlogged (?P<waterlogged>true|false), "
     r"powered (?P<powered>true|false), t=(?P<t>\d+)$"
 )
 
