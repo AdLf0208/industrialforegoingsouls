@@ -6,14 +6,19 @@ The engine answers vanilla's line for everything the player carries:
     Entity <uuid> has the following entity data: [{Slot:0b,count:1,
     id:"industrialforegoingsouls:soul_laser_base",components:
     {"minecraft:block_entity_data":{id:"industrialforegoingsouls:soul_laser_base",
-    souls:30,progress:4,bar:16,lens:"industrialforegoing:blue_laser_lens",
-    augments:[{Efficiency:0.8d},{}],augment_item:"industrialforegoing:efficiency_addon_tier_2"}}}]
+    souls:30,progress:4,bar:16,carried:[{Slot:0b,count:1,
+    id:"industrialforegoing:blue_laser_lens"},{Slot:1b,count:1,
+    id:"industrialforegoing:efficiency_addon_tier_2",components:
+    {"titanium:augments":{Efficiency:0.8d}}}]}}}]
 
 This finds the payload that names one of this mod's machines and prints the shell assignments the
 e2e evaluates:
 
     ok=1 id=industrialforegoingsouls:soul_laser_base souls=30 progress=4 bar=16
-    lens=industrialforegoing:blue_laser_lens efficiency=0.8 wait=none
+    lens=industrialforegoing:blue_laser_lens efficiency=0.8 wait=none items=<ids>
+
+`lens` is the item in the container's slot 0 and `efficiency` the `Efficiency` an augment slot
+carries (0.2.4 carries the slots as `carried`); `items` lists every carried id, comma-separated.
 
 Usage:
 
@@ -69,6 +74,15 @@ def number(text: str, name: str):
     return int(match.group(1)) if match else None
 
 
+def machine_id(text: str):
+    """The first `id` in `text` that names one of this mod's machines (the payload's own, which is
+    not always the first `id`: a `carried` entry before it names an item)."""
+    for value in re.findall(r'(?<![A-Za-z_])id\s*:\s*"([^"]+)"', text):
+        if value in MACHINES:
+            return value
+    return None
+
+
 def word(text: str, name: str):
     match = re.search(r'(?<![A-Za-z_])' + name + r'\s*:\s*"([^"]+)"', text)
     return match.group(1) if match else None
@@ -83,6 +97,46 @@ def decimal(text: str, name: str):
     return match.group(1) if match else None
 
 
+def carried_entries(body: str) -> list[str]:
+    """The `carried` list's entries, each a compound's text without its braces."""
+    match = re.search(r"(?<![A-Za-z_])carried\s*:\s*\[", body)
+    if not match:
+        return []
+    entries = []
+    index = match.end()
+    depth = 1
+    while index < len(body):
+        char = body[index]
+        if char == '"':
+            index += 1
+            while index < len(body):
+                if body[index] == "\\":
+                    index += 2
+                    continue
+                if body[index] == '"':
+                    break
+                index += 1
+        elif char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                break
+        elif char == "{" and depth == 1:
+            start, inner = index, 0
+            while index < len(body):
+                if body[index] == "{":
+                    inner += 1
+                elif body[index] == "}":
+                    inner -= 1
+                    if inner == 0:
+                        break
+                index += 1
+            entries.append(body[start + 1 : index])
+        index += 1
+    return entries
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
         print("usage: parse_carry.py '<data get reply>' none|<machine id> [souls] [bar] [lens] [efficiency] [wait]",
@@ -91,7 +145,7 @@ def main(argv: list[str]) -> int:
     line, expect = argv[1], argv[2].strip()
     body = None
     for candidate in payload_bodies(line):
-        if word(candidate, "id") in MACHINES:
+        if machine_id(candidate) is not None:
             body = candidate
             break
 
@@ -107,13 +161,22 @@ def main(argv: list[str]) -> int:
         print("ok=0")
         print("component=absent")
         return 1
+    entries = carried_entries(body)
+    lens = next(
+        (word(entry, "id") for entry in entries if number(entry, "Slot") == 0),
+        None,
+    )
+    efficiency = next(
+        (decimal(entry, "Efficiency") for entry in entries if decimal(entry, "Efficiency")),
+        None,
+    )
     found = {
-        "id": word(body, "id"),
+        "id": machine_id(body),
         "souls": number(body, "souls"),
         "progress": number(body, "progress"),
         "bar": number(body, "bar"),
-        "lens": word(body, "lens"),
-        "efficiency": decimal(body, "Efficiency"),
+        "lens": lens if lens is not None else word(body, "lens"),
+        "efficiency": efficiency if efficiency is not None else decimal(body, "Efficiency"),
         "wait": number(body, "wait"),
     }
     wanted = {
@@ -128,6 +191,8 @@ def main(argv: list[str]) -> int:
     print(f"ok={1 if ok else 0}")
     for key, value in found.items():
         print(f"{key}={value if value is not None else 'none'}")
+    ids = ",".join(word(entry, "id") or "" for entry in entries)
+    print(f"items={ids if ids else 'none'}")
     return 0 if ok else 1
 
 

@@ -22,6 +22,12 @@
 # click fills and drains it with a bucket — the interface itself is a template's, which a content
 # block cannot attach (`notes.md` §3 has the measurement).
 #
+# Phase S proves the laser base's **menu and screen** (0.2.4): a plain right-click opens a menu type
+# this package declares, with the catalyst at slot 300 and Titanium's two augment slots at 301/302,
+# and the menu's three data slots carry the tank and the bar. The differential is a vanilla barrel
+# beside it (27 chest slots the same click opens), and `SELFTEST=screen` asserts the base opens **no**
+# menu, which must fail against this package.
+#
 # The package is one flat `.hmod` (code and content together), so the game must be one the launcher
 # built with it — no `--dev-mod`:
 #
@@ -175,12 +181,75 @@ summon_warden() { # summon_warden X Y Z
 }
 
 # Stand two blocks west of the machine and aim at its west face: a right-click there is a
-# `use_item_on`, which is where the lens seat runs.
+# `use_item_on`, which is where the lens seat runs. The menu is closed first: a refused click falls
+# through to it (`use_without_item`), and a click made while a menu is open belongs to the menu.
 aim_machine() {
+    ctl close >/dev/null 2>&1 || true
+    ctl wait 2 >/dev/null
     ctl command "execute in minecraft:the_end run tp @s $((X0 - 2)).5 101 0.5" >/dev/null
     ctl wait 6 >/dev/null
     ctl look-at-block "$X0" 101 0 west >/dev/null 2>&1 || fail "cannot aim at the machine at $X0"
     ctl wait 6 >/dev/null
+}
+
+# A right-click with the held item, with the ctl reply and the open screen in the failure: a click
+# that lands in a menu (or off the block) says so instead of "failed".
+click_held() { # click_held WHAT
+    if ! OUT=$(ctl use-item 2>&1); then
+        local screen at
+        screen=$(ctl state | jq -r '.screen // ""')
+        at=$(ctl looking-at 2>/dev/null | jq -c '{kind, block, pos}' 2>/dev/null || true)
+        fail "the right-click with $1 failed: $OUT (screen=$screen, looking at $at)"
+    fi
+}
+
+# --- the machine's menu (phase S) ------------------------------------------------------------
+# Open a block's menu: a plain right-click with an empty hand, which this port answers itself
+# (`PlayerRef::open_menu`). The engine's own click path does not open a mod container's content menu
+# at this pin (measured by `bibliocraft`; `rftoolsstorage` opens its own the same way).
+open_menu_at() { # open_menu_at X Y Z FACE
+    ctl close >/dev/null 2>&1 || true
+    ctl wait 3
+    ctl command "execute in minecraft:the_end run tp @s $(($1 - 2)).5 $2 $3.5" >/dev/null
+    ctl wait 4
+    ctl look-at-block "$1" "$2" "$3" "$4" >/dev/null 2>&1 || fail "cannot aim at $1,$2,$3"
+    ctl wait 3
+    ctl interact "$1" "$2" "$3" "$4" >/dev/null || fail "the click on $1,$2,$3 failed"
+    ctl wait-for screen container --timeout 10 >/dev/null 2>&1 \
+        || fail "no container menu opened at $1,$2,$3 (screen=$(ctl state | jq -r '.screen // ""'), hand $(ctl inventory | jq -c '.held'))"
+    ctl wait 3
+}
+close_menu() { ctl close >/dev/null 2>&1 || true; ctl wait 3; }
+# The open menu's own container slots (300+) and what one holds.
+container_slots() { ctl screen | jq '[.slots[] | select(.slot >= 300)] | length'; }
+container_item() {
+    ctl screen | jq -r --arg s "$1" '[.slots[] | select(.slot == ($s | tonumber))][0].item // "empty"'
+}
+container_count() {
+    ctl screen | jq -r --arg s "$1" '[.slots[] | select(.slot == ($s | tonumber))][0].count // 0'
+}
+carried_item() { ctl screen | jq -r '.carried.item // "empty"'; }
+# Take the item out of the hand: a lens or an augment in the hand is *seated* by the click, so the
+# menu only opens with an empty hand (as a machine's GUI opens either way; the click carries an item
+# into its slot here, which is upstream's `useItemOn`).
+hand_off() { ctl select 9 >/dev/null; ctl wait 2; }
+# The first inventory slot of the open menu (hotbar or main, below 100) holding `item`.
+slot_with() { ctl screen | jq -r --arg i "$1" '[.slots[] | select(.item == $i and .slot < 100)][0].slot // ""'; }
+# The whole stack from inventory slot `from` into container slot `to`.
+put_stack() { # put_stack FROM TO
+    ctl click-slot "$1" >/dev/null || fail "cannot pick up slot $1"
+    ctl wait 2
+    ctl click-slot "$2" >/dev/null || fail "cannot place into slot $2"
+    ctl wait 3
+}
+# Take the whole stack out of the laser base's container slot `1` (a shift-click moves it to the
+# player's inventory). This is the catalyst's exit now: the empty-hand take-back is gone, as
+# upstream's GUI is the way its slots are emptied.
+take_from_menu() { # take_from_menu SLOT
+    open_menu_at "$X0" 101 0 west
+    ctl click-slot "$1" shift >/dev/null || fail "the shift-click on slot $1 failed"
+    ctl wait 4
+    close_menu
 }
 
 # --- the parent's laser machinery (phase M2) -------------------------------------------------
@@ -420,7 +489,7 @@ ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
 ctl wait 8 >/dev/null
 ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the lens is not in the hotbar"
 aim_machine
-ctl use-item >/dev/null || fail "the right-click with the lens on the machine failed"
+click_held "the lens on the machine"
 ctl wait 8 >/dev/null
 info $BASE_POS
 expect "the seated lens" "$LENS" "industrialforegoing:blue_laser_lens"
@@ -436,21 +505,21 @@ OPERATIONS=$(python3 -c "print(round((500.0 - float('$WARDEN')) / 4))")
     || fail "the warden is still at $WARDEN health after the operations"
 echo "  the lens: $OPERATIONS operations, $SOULS souls, warden $WARDEN health"
 
-echo "== D: no lens again, same warden, 60 more ticks: the tank does not move =="
+echo "== D: the menu takes the lens out, and the tank does not move =="
+# The catalyst leaves through the menu's slot 300: the machine's slots are its container now, so the
+# GUI is the way they are emptied, as upstream's Titanium screen is. The tank must then stand still.
 ctl command "clear @s" >/dev/null
 ctl wait 4 >/dev/null
-aim_machine
-ctl use-item >/dev/null || fail "the right-click with an empty hand on the machine failed"
-ctl wait 8 >/dev/null
+take_from_menu 300
 info $BASE_POS
-expect "the lens the empty hand took back" "$LENS" "none"
+expect "the lens the menu took out" "$LENS" "none"
 TAKEN=$(held industrialforegoing:blue_laser_lens)
-[ "$TAKEN" -ge 1 ] || fail "the empty hand did not take the lens back"
+[ "$TAKEN" -ge 1 ] || fail "the menu did not hand the lens to the inventory"
 BEFORE=$SOULS
 ctl wait 60 >/dev/null
 info $BASE_POS
 expect "the tank after 60 ticks with the lens out" "$SOULS" "$BEFORE"
-echo "  the lens taken back: the tank stays at $SOULS souls for 60 ticks"
+echo "  the lens taken out through the menu: the tank stays at $SOULS souls for 60 ticks"
 
 echo "== D2: the efficiency augment is seated by a click, and speed is refused =="
 # Titanium's augment inventory is two slots; `canAcceptAugment` on this machine refuses Speed and
@@ -460,7 +529,7 @@ ctl wait 8 >/dev/null
 ctl select industrialforegoing:efficiency_addon_tier_2 >/dev/null 2>&1 \
     || fail "the efficiency addon is not in the hotbar"
 aim_machine
-ctl use-item >/dev/null || fail "the right-click with the efficiency addon on the machine failed"
+click_held "the efficiency addon on the machine"
 ctl wait 8 >/dev/null
 info $BASE_POS
 expect "the efficiency the seated augment reads" "$EFFICIENCY" "0.80"
@@ -479,6 +548,10 @@ ctl select industrialforegoing:speed_addon_tier_1 >/dev/null 2>&1 \
 aim_machine
 ctl use-item >/dev/null 2>&1 || true
 ctl wait 8 >/dev/null
+# The refused click falls through to the menu (`use_without_item`), so close it: the next phase's
+# right-click belongs to the world.
+ctl close >/dev/null 2>&1 || true
+ctl wait 3 >/dev/null
 info $BASE_POS
 expect "the efficiency after the refused speed addon" "$EFFICIENCY" "0.80"
 expect "the refused speed addon is still held" "$(held industrialforegoing:speed_addon_tier_1)" 1
@@ -489,7 +562,7 @@ ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
 ctl wait 8 >/dev/null
 ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the lens is not in the hotbar"
 aim_machine
-ctl use-item >/dev/null || fail "the right-click with the lens on the machine failed"
+click_held "the lens on the machine"
 ctl wait 8 >/dev/null
 info $BASE_POS
 expect "the lens back in with the augment seated" "$LENS" "industrialforegoing:blue_laser_lens"
@@ -513,13 +586,11 @@ fi
 echo "  efficiency 0.80: bar $PROGRESS_MAX, $GAINED souls in the window (the plain bar fits 8 operations)"
 
 echo "== E: the pipe pulls 4 a tick into a network of 4 souls a pipe =="
-# The tank must not move on its own while the pipe is measured: the lens comes back out (D3 left it
-# in, and a seated lens keeps harvesting a warden every 16 ticks).
+# The tank must not move on its own while the pipe is measured: the lens comes back out through the
+# menu (D3 left it in, and a seated lens keeps harvesting a warden every 16 ticks).
 ctl command "clear @s" >/dev/null
 ctl wait 4 >/dev/null
-aim_machine
-ctl use-item >/dev/null || fail "the right-click with an empty hand on the machine failed"
-ctl wait 8 >/dev/null
+take_from_menu 300
 info $BASE_POS
 expect "the lens out again for the pipe measurement" "$LENS" "none"
 say "industrialforegoingsouls souls $BASE_POS 50"
@@ -678,7 +749,7 @@ ctl command "execute in minecraft:the_end run tp @s $WX.5 101 $((WZ - 2)).5" >/d
 ctl wait 6 >/dev/null
 ctl look-at-block $WX 101 $WZ north >/dev/null 2>&1 || fail "cannot aim at the pipe at $WX,101,$WZ"
 ctl wait 6 >/dev/null
-ctl use-item >/dev/null || fail "the right-click with the water bucket on the pipe failed"
+click_held "the water bucket on the pipe"
 ctl wait 6 >/dev/null
 expect "the waterlogged pipe's state" "$(block_prop $WX 101 $WZ waterlogged)" "true"
 info $WX 101 $WZ
@@ -713,7 +784,7 @@ ctl command "execute in minecraft:the_end run tp @s $WX.5 101 $((WZ - 2)).5" >/d
 ctl wait 6 >/dev/null
 ctl look-at-block $WX 101 $WZ north >/dev/null 2>&1 || fail "cannot aim at the pipe for the drain"
 ctl wait 6 >/dev/null
-ctl use-item >/dev/null || fail "the right-click with the empty bucket on the pipe failed"
+click_held "the empty bucket on the pipe"
 ctl wait 6 >/dev/null
 expect "the drained pipe's state" "$(block_prop $WX 101 $WZ waterlogged)" "false"
 info $WX 101 $WZ
@@ -764,6 +835,123 @@ echo "  the laser base refuses a waterlogged state by the game's own parser"
 ctl command "gamemode creative @s" >/dev/null
 ctl command "clear @s" >/dev/null
 ctl wait 4 >/dev/null
+
+echo "== S: the laser base's menu lists the catalyst and the two augment slots =="
+# The gap this slice closes, from notes.md §7: "The augment slots have no screen. Upstream's two
+# slots are Titanium's GUI; this port seats and returns them by right-click. A player cannot see the
+# slots without reading /industrialforegoingsouls info."
+#
+# The machine now declares a container of three slots (the catalyst at 0, Titanium's augment slots at
+# 1 and 2) and a menu type of its own; the menu's three data slots are the tank, the bar's progress and
+# the bar's length. `SOC = souls, progress, bar`.
+#
+# R killed every mob: the harvest needs a warden in the box again, and the two pipes E left beside the
+# base come out, so the tank cannot move except by the machine's own harvest. R left the difficulty
+# peaceful (for the breaking phases), and a warden does not survive that: back to normal here.
+ctl command "difficulty normal" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $((X0 + 1)) 101 0 minecraft:air" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $((X0 + 2)) 101 0 minecraft:air" >/dev/null
+ctl wait 6 >/dev/null
+summon_warden "$X0" 102 0
+ctl command "clear @s" >/dev/null
+ctl wait 8 >/dev/null
+
+# 1. A plain right-click opens the menu, and it lists the machine's three slots.
+if [ "$SELFTEST" = screen ]; then
+    echo "(selftest: asserting the base opens no menu)"
+    ctl close >/dev/null 2>&1 || true
+    ctl wait 3
+    aim_machine
+    ctl interact "$X0" 101 0 west >/dev/null || fail "the click on the base failed"
+    ctl wait 6 >/dev/null
+    SCREEN=$(ctl state | jq -r '.screen // ""')
+    [ "$SCREEN" = playing ] \
+        || fail "selftest: the base opened a menu ($SCREEN), expected none"
+fi
+open_menu_at "$X0" 101 0 west
+expect "the machine's menu slots" "$(container_slots)" 3
+expect "the catalyst slot at 300" "$(container_item 300)" "empty"
+expect "the first augment slot" "$(container_item 301)" \
+    "industrialforegoing:efficiency_addon_tier_2"
+expect "the second augment slot" "$(container_item 302)" "empty"
+echo "  the menu: 3 slots; 301 holds the tier-2 addon D2 seated, 300 and 302 are empty"
+
+# 2. The lens goes in through the catalyst slot — the GUI's own path, not a click on the block.
+close_menu
+ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
+ctl wait 8 >/dev/null
+hand_off
+open_menu_at "$X0" 101 0 west
+FROM=$(slot_with industrialforegoing:blue_laser_lens)
+[ -n "$FROM" ] || fail "the lens is in no inventory slot of the open menu"
+put_stack "$FROM" 300
+expect "the lens the menu put in the catalyst" "$(container_item 300)" \
+    "industrialforegoing:blue_laser_lens"
+expect "the catalyst's one item" "$(container_count 300)" 1
+close_menu
+info $BASE_POS
+expect "the lens the menu seated" "$LENS" "industrialforegoing:blue_laser_lens"
+echo "  slot 300 now holds the lens the menu seated"
+
+# 3. The menu's data slots are the tank and the bar, and they move with the harvest: the warden is
+#    in the box, the lens is in the catalyst, and the tank's readout and the data slot agree (both
+#    are read in one command, so no tick can pass between them).
+info $BASE_POS
+SOULS_BEFORE=$SOULS
+MENU_BEFORE=$MENU_SOULS
+expect "the data slot tank before the wait" "$MENU_SOULS" "$SOULS"
+expect "the data slot progress before the wait" "$MENU_PROGRESS" "$PROGRESS"
+expect "the data slot bar before the wait" "$MENU_BAR" "$PROGRESS_MAX"
+ctl wait 40 >/dev/null
+info $BASE_POS
+[ "$MENU_SOULS" -ge "$((MENU_BEFORE + 2))" ] \
+    || fail "the menu's tank data slot read $MENU_SOULS after 40 ticks, expected at least $((MENU_BEFORE + 2))"
+expect "the tank the machine read" "$SOULS" "$MENU_SOULS"
+expect "the data slot progress after the wait" "$MENU_PROGRESS" "$PROGRESS"
+expect "the data slot bar after the wait" "$MENU_BAR" "$PROGRESS_MAX"
+[ "$PROGRESS" -le "$PROGRESS_MAX" ] || fail "the bar reads $PROGRESS/$PROGRESS_MAX"
+echo "  the harvest through the menu-seated lens: souls $SOULS_BEFORE -> $SOULS, the data slots [$MENU_SOULS, $MENU_PROGRESS, $MENU_BAR]"
+
+# 4. A second efficiency addon is refused by the menu's augment slots, the occupied one and the empty
+#    one alike: `canAcceptAugment` holds one, so the addon stays on the cursor. The second one is the
+#    *tier 1* addon: clicking the very same item into a slot that holds it takes the pin's same-item
+#    merge path (vanilla's top-up, which ignores `may_place`), so a like-for-like click would empty
+#    the slot instead of showing the refusal.
+ctl command "give @s industrialforegoing:efficiency_addon_tier_1 1" >/dev/null
+ctl wait 8 >/dev/null
+hand_off
+open_menu_at "$X0" 101 0 west
+FROM=$(slot_with industrialforegoing:efficiency_addon_tier_1)
+[ -n "$FROM" ] || fail "the tier-1 addon is in no inventory slot of the open menu"
+ctl click-slot "$FROM" >/dev/null
+ctl wait 3
+echo "  after picking the tier-1 addon up: carried $(carried_item), 301 $(container_item 301)"
+ctl click-slot 301 >/dev/null
+ctl wait 4
+expect "the occupied augment slot after the refused click" "$(container_item 301)" \
+    "industrialforegoing:efficiency_addon_tier_2"
+expect "the tier-1 addon the refused click left on the cursor" "$(carried_item)" \
+    "industrialforegoing:efficiency_addon_tier_1"
+ctl click-slot 302 >/dev/null
+ctl wait 4
+expect "the empty augment slot after the refused click" "$(container_item 302)" "empty"
+expect "the tier-1 addon still on the cursor" "$(carried_item)" \
+    "industrialforegoing:efficiency_addon_tier_1"
+ctl click-slot "$FROM" >/dev/null
+ctl wait 3
+close_menu
+expect "the refused addon back in the inventory" "$(held industrialforegoing:efficiency_addon_tier_1)" 1
+echo "  a second efficiency addon is refused by both augment slots and stays on the cursor"
+
+# 5. The differential: the same click opens a *vanilla* barrel's 27-slot chest menu, so the 3 slots
+#    that show the machine's own catalyst and augments are this package's, not the harness's.
+ctl command "execute in minecraft:the_end run setblock $((X0 + 4)) 101 -3 minecraft:barrel" >/dev/null
+ctl wait 6 >/dev/null
+open_menu_at $((X0 + 4)) 101 -3 west
+expect "the vanilla barrel's menu slots" "$(container_slots)" 27
+expect "the barrel's first slot" "$(container_item 300)" "empty"
+close_menu
+echo "  a vanilla barrel beside it opens 27 chest slots where the machine's menu has 3"
 
 echo "== K: the carried recipes craft, and the carry is not vacuous =="
 ctl command "execute in minecraft:the_end run fill 216 100 6 222 100 12 minecraft:stone" >/dev/null
@@ -827,14 +1015,14 @@ ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
 ctl wait 6 >/dev/null
 ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the lens is not in the hotbar"
 aim_block "$RX" 101 9
-ctl use-item >/dev/null || fail "the right-click with the lens on the carrying machine failed"
+click_held "the lens on the carrying machine"
 ctl wait 6 >/dev/null
 ctl command "give @s industrialforegoing:efficiency_addon_tier_2 1" >/dev/null
 ctl wait 6 >/dev/null
 ctl select industrialforegoing:efficiency_addon_tier_2 >/dev/null 2>&1 \
     || fail "the efficiency addon is not in the hotbar"
 aim_block "$RX" 101 9
-ctl use-item >/dev/null || fail "the right-click with the efficiency addon failed"
+click_held "the efficiency addon"
 ctl wait 6 >/dev/null
 say "industrialforegoingsouls souls $RX 101 9 30"
 # One plain bar later the augment has rescaled the bar to 16; no warden is in range (they were
@@ -859,9 +1047,15 @@ eval "$(python3 "$PORT/tools/parse_carry.py" "$CARRY" industrialforegoingsouls:s
     "$KEPT_SOULS" 16 industrialforegoing:blue_laser_lens 0.8)" \
     || fail "the broken machine's item does not carry its contents: $CARRY"
 [ "${ok:-0}" = 1 ] || fail "the carried payload did not parse: $CARRY"
+# The container's slots travel as the payload's `carried` list, one stack a slot, so the ground gets
+# neither: the engine's own container spill found the slots empty (the break moved them aside).
 expect "the lens the break did not spill" "$(held industrialforegoing:blue_laser_lens)" 0
 expect "the addon the break did not spill" "$(held industrialforegoing:efficiency_addon_tier_2)" 0
-echo "  the drop carries souls $souls, progress $progress/$bar, lens $lens, efficiency $efficiency"
+case "$items" in
+    *industrialforegoing:blue_laser_lens*industrialforegoing:efficiency_addon_tier_2*) ;;
+    *) fail "the payload's carried list is '$items', expected the lens (slot 0) then the addon (slot 1)" ;;
+esac
+echo "  the drop carries souls $souls, progress $progress/$bar, and the stacks [$items]"
 # … and placing it back puts the machine together again.
 place_kept "$RX" 101 9 industrialforegoingsouls:soul_laser_base
 info "$RX" 101 9
@@ -962,7 +1156,7 @@ ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
 ctl wait 6 >/dev/null
 ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the first lens is not in the hotbar"
 aim_block "$QX" 101 "$QZ"
-ctl use-item >/dev/null || fail "the first lens did not seat on the swap machine"
+click_held "the first lens on the swap machine"
 ctl wait 6 >/dev/null
 info "$QX" 101 "$QZ"
 expect "the first lens seated" "$LENS" "industrialforegoing:blue_laser_lens"
@@ -971,7 +1165,7 @@ ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
 ctl wait 6 >/dev/null
 ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the second lens is not in the hotbar"
 aim_block "$QX" 101 "$QZ"
-ctl use-item >/dev/null || fail "the second lens's click failed"
+click_held "the second lens on the swap machine"
 ctl wait 6 >/dev/null
 info "$QX" 101 "$QZ"
 if [ "$SELFTEST" = replace ]; then
@@ -1038,4 +1232,4 @@ fi
 expect "this package's ore in the base's output" "$ORY" "minecraft:echo_shard x1"
 echo "  one base bar for the drill's 1,000 FE yielded $ORY"
 
-echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens back freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand, and the seated addon comes back out on an empty hand; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE; and waterlogging is the state's: a fresh pipe reads waterlogged false, a water bucket fills it to true and leaves the empty bucket in the hand, the waterlogged pipe still pulls the laser base 50 -> 46 into a 4/4 network, an empty bucket drains it back to false and hands the water bucket over, a surge set to facing=north,waterlogged=true reads both properties back and still spends a soul on 300 ticks where a dry one reads false, and the laser base, which upstream does not waterlog, refuses the property by the game's own parser"
+echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens out through the machine's menu freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand; the machine's own menu opens on a plain right-click with three slots (the catalyst and Titanium's two augment slots) and three data slots that carry the tank and the bar, the lens seated through slot 300 makes souls (a vanilla barrel's 27-slot chest menu is the differential), and a second efficiency addon is refused by the menu's slot rules and stays on the cursor; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE; and waterlogging is the state's: a fresh pipe reads waterlogged false, a water bucket fills it to true and leaves the empty bucket in the hand, the waterlogged pipe still pulls the laser base 50 -> 46 into a 4/4 network, an empty bucket drains it back to false and hands the water bucket over, a surge set to facing=north,waterlogged=true reads both properties back and still spends a soul on 300 ticks where a dry one reads false, and the laser base, which upstream does not waterlog, refuses the property by the game's own parser"

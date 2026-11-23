@@ -523,6 +523,95 @@ impl Surge {
     }
 }
 
+// -----------------------------------------------------------------------
+// The menu and its slots (slice 0.2.4)
+// -----------------------------------------------------------------------
+
+/// The menu type the content declares (`data/industrialforegoingsouls/horizon/menu/soul_laser_base.json`),
+/// which is also the block it belongs to.
+pub const MENU: &str = "industrialforegoingsouls:soul_laser_base";
+
+/// The container's slots, in menu order: the catalyst (`SidedInventoryComponent lens`, one item) at
+/// 0 and Titanium's two augment slots after it, in the order `AugmentInventory` keeps them.
+pub const LENS_SLOT: usize = 0;
+/// Titanium's two augment slots, in the machine's own order.
+pub const AUGMENT_SLOTS: [usize; 2] = [1, 2];
+/// The container's slot count: the catalyst and the two augment slots.
+pub const SLOT_COUNT: usize = 3;
+
+/// The menu's data slots, in order: the tank, the bar's progress and the bar's length. Upstream's
+/// screen draws the tank and the bar from its `ContainerData`; this port's are the block entity's
+/// `data`, in the same order.
+pub const DATA_COUNT: usize = 3;
+
+/// What the menu syncs each tick: the tank, the bar's progress and the bar's length, clamped to the
+/// 16-bit the data slots travel as (a bigger value would wrap on the wire, as vanilla's shorts do).
+#[must_use]
+pub fn menu_data(base: &LaserBase) -> [i32; DATA_COUNT] {
+    // The wire is 16-bit (vanilla's `ContainerData` is a short): a value past it is clamped, never
+    // wrapped, so a menu cannot show a tank as a negative number.
+    let wire = |value: u32| i32::try_from(value.min(u32::from(i16::MAX as u16))).unwrap_or(0);
+    [wire(base.souls), wire(base.progress), wire(base.bar)]
+}
+
+/// What a stack of an augment's component is: `canAcceptAugment` reads `AugmentTypes.SPEED` and
+/// `Efficiency` out of the `titanium:augments` component, and nothing else is an augment at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Addon {
+    /// A stack carrying `Efficiency` (0.9 for tier 1, 0.8 for tier 2).
+    Efficiency,
+    /// A stack carrying `Speed`: refused on this machine, which has nothing to speed up.
+    Speed,
+    /// Neither value: not an augment.
+    None,
+}
+
+/// Whether an addon may go into an augment slot: efficiency only, and only while **no** augment is
+/// seated — `SoulLaserBaseBlockEntity.canAcceptAugment` refuses speed outright and refuses a second
+/// augment of a type already seated. A swap (an occupied slot) is a placement too, so it is refused
+/// by the same rule and the held addon stays in the hand, as 0.2.3's click already did.
+#[must_use]
+pub fn augment_fits(addon: Addon, seated: bool) -> bool {
+    addon == Addon::Efficiency && !seated
+}
+
+/// The augment slot a newly clicked efficiency addon goes to: the first of Titanium's two that is
+/// empty, in slot order. `None` when the machine refuses it (see [`augment_fits`]) or both slots are
+/// taken.
+#[must_use]
+pub fn augment_slot(empty: [bool; 2], addon: Addon, seated: bool) -> Option<usize> {
+    if !augment_fits(addon, seated) {
+        return None;
+    }
+    empty
+        .iter()
+        .position(|empty| *empty)
+        .map(|index| AUGMENT_SLOTS[index])
+}
+
+/// What the machine's menu takes in slot `slot`: the catalyst slot holds only the blue lens
+/// (`catalyst.getStackInSlot(0).getItem().equals(ModuleCore.LASER_LENS[11].get())`), an augment slot
+/// follows [`augment_fits`], and every other slot is the player's inventory, which is not this
+/// machine's to refuse.
+#[must_use]
+pub fn slot_accepts(slot: usize, lens: bool, addon: Addon, seated: bool) -> bool {
+    match slot {
+        LENS_SLOT => lens,
+        slot if AUGMENT_SLOTS.contains(&slot) => augment_fits(addon, seated),
+        _ => true,
+    }
+}
+
+/// The slots a save from 0.2.x (or a carried payload) is adopted into on its first tick: the old
+/// package kept the catalyst item id under `lens` and the augment's item id under `augment_item`
+/// (the components under `augments`), and this slice keeps the items themselves in the container.
+/// Positional: the lens at 0, the one augment at 1.
+#[must_use]
+pub fn adopted_items(lens: Option<&str>, augments: [Option<&str>; 2]) -> [Option<String>; 3] {
+    let adopt = |item: Option<&str>| item.map(str::to_owned);
+    [adopt(lens), adopt(augments[0]), adopt(augments[1])]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1099,5 +1188,95 @@ mod tests {
             "the write-back is visible"
         );
         assert_eq!(walked.network().total(), 6);
+    }
+
+    /// The menu's three data slots are the tank, the bar's progress and the bar's length, in that
+    /// order: what `SoulLaserBaseScreen`'s `ContainerData` and this port's screen draw.
+    #[test]
+    fn the_menu_syncs_the_tank_the_progress_and_the_bar() {
+        let base = LaserBase::from_saved(12, Some(5), Some(16));
+        assert_eq!(menu_data(&base), [12, 5, 16]);
+    }
+
+    /// The data slots travel as 16-bit values (vanilla's `ContainerData` is a short), so nothing the
+    /// menu sends may exceed the wire's top: a value is clamped, never wrapped. (A `LaserBase` read
+    /// from a save is already clamped to the tank; the rule is tested on a value that is not.)
+    #[test]
+    fn a_data_slot_stops_at_the_sixteen_bit_top() {
+        let base = LaserBase {
+            souls: 40_000,
+            progress: 5,
+            bar: 16,
+        };
+        assert_eq!(menu_data(&base), [i32::from(i16::MAX), 5, 16]);
+    }
+
+    /// An efficiency addon clicks into the first empty augment slot (1), then the second (2).
+    #[test]
+    fn an_efficiency_addon_goes_into_the_first_empty_augment_slot() {
+        assert_eq!(
+            augment_slot([true, true], Addon::Efficiency, false),
+            Some(1)
+        );
+        assert_eq!(
+            augment_slot([false, true], Addon::Efficiency, true),
+            None,
+            "one is already seated"
+        );
+    }
+
+    /// A second efficiency addon is refused, in the occupied slot and in the empty one: the machine
+    /// holds one. That is `canAcceptAugment`'s "a type already seated" rule, and the click that the
+    /// e2e drives into an occupied augment slot depends on it.
+    #[test]
+    fn a_second_efficiency_addon_is_refused_by_either_augment_slot() {
+        assert!(!augment_fits(Addon::Efficiency, true));
+        for slot in AUGMENT_SLOTS {
+            assert!(
+                !slot_accepts(slot, false, Addon::Efficiency, true),
+                "augment slot {slot} took a second efficiency addon"
+            );
+        }
+    }
+
+    /// A speed addon is never an augment this machine takes (`canAcceptAugment`), seated or not.
+    #[test]
+    fn a_speed_addon_is_refused() {
+        assert!(!augment_fits(Addon::Speed, false));
+        assert!(!augment_fits(Addon::Speed, true));
+        assert!(!slot_accepts(AUGMENT_SLOTS[0], false, Addon::Speed, false));
+    }
+
+    /// The catalyst slot takes the blue lens and nothing else — including nothing but the lens'
+    /// item id, so an addon held over it is refused.
+    #[test]
+    fn the_catalyst_slot_takes_only_the_blue_lens() {
+        assert!(slot_accepts(LENS_SLOT, true, Addon::None, false));
+        assert!(!slot_accepts(LENS_SLOT, false, Addon::Efficiency, false));
+    }
+
+    /// The player's inventory (menu slots past the container) is not this machine's to refuse.
+    #[test]
+    fn the_player_inventory_slots_are_not_the_machines_to_refuse() {
+        assert!(slot_accepts(SLOT_COUNT, false, Addon::Speed, true));
+        assert!(slot_accepts(SLOT_COUNT + 36, false, Addon::None, true));
+    }
+
+    /// A save from 0.2.x holds the lens and the augment's item id under the old keys and no slots:
+    /// the first tick adopts them into the container, positionally, and leaves the rest empty.
+    #[test]
+    fn a_legacy_save_adopts_its_lens_and_augments_into_the_slots() {
+        assert_eq!(
+            adopted_items(
+                Some(LENS),
+                [Some("industrialforegoing:efficiency_addon_tier_2"), None]
+            ),
+            [
+                Some(LENS.to_owned()),
+                Some("industrialforegoing:efficiency_addon_tier_2".to_owned()),
+                None
+            ]
+        );
+        assert_eq!(adopted_items(None, [None, None]), [None, None, None]);
     }
 }

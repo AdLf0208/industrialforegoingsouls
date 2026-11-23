@@ -166,6 +166,14 @@ def build() -> dict[str, bytes]:
             "title": "itemGroup.industrialforegoingsouls",
         },
     )
+    # The laser base's menu (`native_block_entity_container`'s menu, API 85): the three slots the
+    # machine's container declares — the catalyst and Titanium's two augment slots — and the three
+    # data slots its screen reads (`souls`, `progress`, `bar`). The menu type is this package's own
+    # (`industrialforegoingsouls:soul_laser_base`), so no vanilla menu is imitated.
+    put(
+        f"data/{MOD}/horizon/menu/soul_laser_base.json",
+        {"data_slots": 3, "slots": 3},
+    )
 
     # --- assets: models, blockstates, item definitions, textures, lang ------------------------
     for name in BLOCK_MODELS:

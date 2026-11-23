@@ -1,11 +1,11 @@
-# Package receipt — industrialforegoingsouls 0.2.3
+# Package receipt — industrialforegoingsouls 0.2.4
 
 | field | value |
 |---|---|
-| version | `0.2.3` |
+| version | `0.2.4` |
 | file | `industrialforegoingsouls.hmod` |
-| bytes | 101,380 |
-| sha256 | `68b1485efc1539b665aeb623e986d042bb73626723bc3d9cd4c6b1d3124c88b8` |
+| bytes | 111,572 |
+| sha256 | `79159d3fead5c82aec88e3526e17098e0c76511244b487147ccc046b36bda82b` |
 | source | this tag — the tree here is the source that produced the archive |
 | game | 26.3 |
 | horizon | `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` |

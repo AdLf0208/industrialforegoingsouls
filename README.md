@@ -9,7 +9,8 @@ The mod is one soul economy in three blocks:
   a warden in the 3×3×3 box above it, hurts the warden for 4 every 20 ticks and stores 2 souls in a
   1,350-soul tank. An `industrialforegoing:efficiency_addon_*` seats in its augment slot and rescales
   the bar to `floor(20 × efficiency)` after an operation (the tier 2 addon makes it 16 ticks); a
-  speed addon is refused.
+  speed addon is refused. Its **menu** (a plain right-click) shows the catalyst slot, the two augment
+  slots and the tank and the bar, as upstream's screen does.
 - **Soul Pipe** — carries souls: 4 a block of capacity, 4 a tick pulled out of an adjacent soul
   handler and pushed into one that accepts.
 - **Soul Surge** — spends one soul on 300 accelerated ticks and random-ticks the block it is mounted
@@ -27,9 +28,10 @@ failing later at registration.
 Horizon mods are single `.hmod` files (code and content together), built by the Horizon launcher
 against the pinned game build: `industrialforegoingsouls.hmod` is the package.
 
-In play: place the laser base, right-click it with a blue lens to seat it (an empty hand takes it
-back), right-click with an efficiency addon to seat that too, put a warden above it, and run the
-souls into a pipe network with a surge on whatever you want to accelerate.
+In play: place the laser base, right-click it with a blue lens to seat it (or open its menu and put
+it in the catalyst slot there), right-click with an efficiency addon to seat that too, put a warden
+above it, and run the souls into a pipe network with a surge on whatever you want to accelerate. The
+menu's two augment slots and the catalyst are how the parts come back out.
 `/industrialforegoingsouls info <x> <y> <z>` prints a block's whole state; `souls` and `wait`
 (operator) set it.
 
@@ -48,9 +50,11 @@ pin reverts a water bucket written into the held slot from a click — `notes.md
 - The surge's machine-accelerating and entity-accelerating branches (no helper ticks another block
   entity, or an entity).
 - The Sculk Soul Tank screen addon (the parent GUI it draws on is not ported).
-- A screen for the two augment slots: the click is the only way in or out. A broken machine does
-  carry its contents on its item (souls, the bar, the lens, the addon), and placing it back restores
-  them; a second lens swaps with the seated one, which comes back to the player.
+- A **texture** for the machine's screen: the parent's Titanium screen (and its GUI texture) is not
+  this package's and the jar carries none, so the tank and the bar print over the engine's plain
+  panel; the screen's labels are literal English. A broken machine carries its contents on its item
+  (souls, the bar, the lens, the addon), and placing it back restores them; a second lens swaps with
+  the seated one, which comes back to the player.
 - A config file: the numbers are constants.
 - The waterloggable **interface** itself: a flowing fluid beside the pipe does not fill it and a
   dispenser does not either (a content block's interfaces are its template's), and the port does not
@@ -64,7 +68,7 @@ pin reverts a water bucket written into the held slot from a click — `notes.md
 ## Building and testing
 
 ```
-cargo test                                                  # the pure runtime, 38 tests
+cargo test                                                  # the pure runtime and its rules, 46 tests
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 rm -f Cargo.lock && cargo horizon-mod build                 # -> industrialforegoingsouls.hmod
 cargo horizon-mod check industrialforegoingsouls.hmod

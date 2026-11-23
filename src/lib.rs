@@ -38,10 +38,11 @@
 //!
 //! # The harness commands
 //!
-//! Upstream registers no commands. Two of the three blocks have no GUI in this port (Titanium's
-//! screens are the parent's), so the numbers are read and set through
-//! `/industrialforegoingsouls` — the precedent is `/powah info|set` and the parent port's own
-//! `/industrialforegoing info`. `info` is for everyone; `souls` and `wait` are operator commands.
+//! Upstream registers no commands. The laser base has its own menu and screen (slice 0.2.4); the
+//! pipe and the surge have none (Titanium's screens are the parent's), and the numbers behind the
+//! menu are also read and set through `/industrialforegoingsouls` — the precedent is
+//! `/powah info|set` and the parent port's own `/industrialforegoing info`. `info` is for everyone;
+//! `souls` and `wait` are operator commands, and `info` prints the menu's data slots.
 pub mod runtime;
 
 use std::collections::hash_map::DefaultHasher;
@@ -49,19 +50,21 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
 use mod_api::{
-    BlockDropsEvent, BlockEntityPart, BlockEntityTickEvent, BlockEntityTicksEvent,
-    BlockEntityTypeKey, BlockPart, BlockState, Command, CommandArgumentValue, CommandInvocation,
-    Compound, Direction, EntityRef, Flow, GameEventContext, Hand, Hooks, Host, Identifier,
-    InteractionResult, ItemKey, ItemPart, ItemStack, LevelHost, LevelRef, OnBlockPlacedByEvent,
-    RandomSource, RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent,
-    ServerHost, SoundSource, StateForPlacementEvent, Tag, Text, UseItemOnEvent,
-    UseWithoutItemEvent,
+    BlockDropsEvent, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent, BlockEntityTicksEvent,
+    BlockEntityTypeKey, BlockPart, BlockState, ClientHost, Command, CommandArgumentValue,
+    CommandInvocation, Compound, Direction, EntityRef, Flow, GameEventContext, Hand, Hooks, Host,
+    HostTransaction, Identifier, InteractionResult, ItemKey, ItemPart, ItemStack, LevelHost,
+    LevelRef, MenuContainer, MenuPart, MenuSlotRulesEvent, ModContainer, OnBlockPlacedByEvent,
+    OnDestroyedByPlayerEvent, RandomSource, RegisterCommandsEvent, Registrar, RegistrationContext,
+    RunModCommandEvent, Screen, ScreenDrawEvent, ScreenEvent, ServerHost, SoundSource,
+    StateForPlacementEvent, Tag, Text, UseItemOnEvent, UseWithoutItemEvent,
 };
 
 use crate::runtime::{
-    LaserBase, MAX_NETWORK_PIPES, MAX_PROGRESS, Network, NetworkCache, SOUL_STORAGE, Surge, Target,
-    Walked, WaterClick, Waterlogged, grow_component, lens_fits, pipe_pull, replacement_slot,
-    water_click,
+    AUGMENT_SLOTS, Addon, LENS_SLOT, LaserBase, MAX_NETWORK_PIPES, MAX_PROGRESS, MENU, Network,
+    NetworkCache, SLOT_COUNT, SOUL_STORAGE, Surge, Target, Walked, WaterClick, Waterlogged,
+    adopted_items, augment_slot, grow_component, lens_fits, menu_data, pipe_pull, replacement_slot,
+    slot_accepts, water_click,
 };
 
 /// The mod's three blocks.
@@ -84,14 +87,18 @@ const AUGMENT_COMPONENT: &str = "titanium:augments";
 /// (`canAcceptAugment`) and reads `Efficiency`.
 const SPEED: &str = "Speed";
 const EFFICIENCY: &str = "Efficiency";
-/// Titanium's augment inventory: two slots, kept by position.
-const AUGMENT_SLOTS: usize = 2;
-const KEY_AUGMENTS: &str = "augments";
-/// The item the seated augment came from, so an empty hand can take it back: this port ships no
-/// GUI, so the click is the slot's only exit as well as its only entrance.
+/// The item the seated augment came from: the carried payload's record, since the payload is a
+/// saved compound and the slot's stack is not part of it.
 const KEY_AUGMENT_ITEM: &str = "augment_item";
 /// The surge's saved key: the accelerated ticks it still owns.
 const KEY_WAIT: &str = "wait";
+/// The flag a machine sets on its first tick, once a 0.2.x save's `lens`/`augments` keys have been
+/// adopted into the container's slots. Absent means "not adopted yet".
+const KEY_SLOTS: &str = "slots";
+/// The container's stacks in a carried payload: each a stack's own SNBT with its `Slot`. The only
+/// record of the slots the payload needs — the saved compound is a compound, and the slots are not
+/// part of it.
+const KEY_CARRIED: &str = "carried";
 /// The surge's six-way state property (Titanium's `RotationType.SIX_WAY`).
 const FACING: &str = "facing";
 /// The two tags a surge must not accelerate: the mod's own and the convention tag.
@@ -135,7 +142,7 @@ struct Mod;
 impl Hooks for Mod {
     /// Declare the three blocks' block entity types and the Parts that tick them.
     fn register(&self, r: &mut dyn Registrar, _cx: &RegistrationContext) {
-        let _ = r.block_key(BASE);
+        let base_block = r.block_key(BASE);
         let _ = r.block_key(PIPE);
         let _ = r.block_key(SURGE);
         let base_item = r.item_key(BASE);
@@ -178,6 +185,12 @@ impl Hooks for Mod {
             .expect("the pipe ticks its own block entity type");
         r.block_entity_part(&surge_kind, SurgePart)
             .expect("the surge ticks its own block entity type");
+        // The machine's container and its menu (API 16 + 85): three slots — the catalyst and
+        // Titanium's two augment slots — which the menu type the content declares shows as slot
+        // 300, 301 and 302. The faces reach nothing: upstream's catalyst is `FaceMode.NONE` on all
+        // six sides and Titanium's augment inventory is the GUI's, so no hopper may touch any of it.
+        r.block_container(&base_block, container());
+        r.menu_part(MENU, SoulMenu);
         // The keys are kept for the command path, which must prove a position holds one of this
         // mod's block entities without swapping a level.
         let _ = (
@@ -194,8 +207,13 @@ impl Hooks for Mod {
     /// (`collectImplicitComponents`); the pin's engine cannot do it for a **mod** block entity,
     /// because `block_entity_item::place` re-canonicalises the merged data and `canonical` answers
     /// `None` for an id it does not model, so the payload is written here and restored by
-    /// [`SoulMachineItem`]. An empty machine's item stays plain. A creative break drops nothing, so
-    /// `block_drops` never hears it.
+    /// [`SoulMachineItem`]. An empty machine's item stays plain.
+    ///
+    /// The laser base's three slots are a real container now, and the engine spills a container on
+    /// break (`PreRemove`): [`Laser::on_destroyed_by_player`] has already moved them aside into
+    /// [`take_stash`] and emptied the slots, so the ground gets nothing and the payload carries
+    /// them. A break that does not harvest (a creative one) drops nothing, so nothing is stashed and
+    /// the engine's own spill is what a creative player sees.
     fn block_drops(&self, level: &dyn LevelHost, event: &mut BlockDropsEvent<'_>) -> Flow {
         let Some(block) = level.state_block(event.state) else {
             return Flow::Continue;
@@ -213,7 +231,15 @@ impl Hooks for Mod {
         let Some(saved) = level.block_entity_data(entity) else {
             return Flow::Continue;
         };
-        let Some(patch) = carried_patch(machine, &saved) else {
+        let carried = if machine == Machine::Base {
+            take_stash(
+                event.dimension.key().id(),
+                [event.pos.x, event.pos.y, event.pos.z],
+            )
+        } else {
+            None
+        };
+        let Some(patch) = carried_patch(machine, &saved, carried) else {
             return Flow::Continue;
         };
         let Some(item) = machine.item() else {
@@ -297,15 +323,16 @@ struct Laser;
 
 #[mod_api::horizon_part]
 impl BlockPart for Laser {
-    /// Right-clicking the machine with the blue lens seats it, taking one out of the hand; a stack
-    /// carrying Titanium's `titanium:augments` component seats an augment the same way. Upstream's
-    /// slots are Titanium's, opened by a GUI this port does not ship; the click is the same seat
-    /// without a screen.
+    /// Right-clicking the machine with the blue lens puts it in the catalyst slot, taking one out
+    /// of the hand; a stack carrying Titanium's `titanium:augments` component goes into the first
+    /// free augment slot the same way. The slots are the machine's own container (three slots,
+    /// shown by its menu); a click with anything else falls through to [`Self::use_without_item`],
+    /// which opens that menu.
     ///
     /// `canAcceptAugment` refuses a **speed** augment on this machine (it has nothing to speed up:
     /// the bar is the harvest's only clock) and refuses a second augment of a type already seated;
-    /// both answers leave the stack in the hand, exactly as the GUI's slot would. A stack with no
-    /// augment component and no lens passes through.
+    /// both answers leave the stack in the hand, exactly as the GUI's slot would. A second lens is
+    /// a swap, as the GUI's cursor would be.
     fn use_item_on(
         &self,
         host: &mut dyn ServerHost,
@@ -322,73 +349,91 @@ impl BlockPart for Laser {
         if entity.kind(&*host) != Some(*BASE_KIND.get()?) {
             return None;
         }
+        let hand = match click.hand {
+            Hand::Main => u32::try_from(host.player(click.player)?.selected_slot(&*host)?).ok()?,
+            Hand::Off => 40,
+        };
         if stack.item() == *LENS_ITEM.get()? {
-            let seated = LENS_ITEM.get()?.id(&*host);
-            let saved = entity.data(&*host).unwrap_or_default();
-            // A second lens is a swap, not a void: upstream's one catalyst slot hands the old lens
-            // back to the player. Work out where it goes (and that it is a real item) **before**
-            // anything is written, so a full inventory refuses the click instead of losing it.
-            let previous = read_lens(&saved);
-            let destination = match previous.as_deref() {
-                Some(item) => {
-                    let _ = host.item_key(&Identifier::parse(item).ok()?)?;
-                    let player = host.player(click.player)?;
-                    let occupied: Vec<u32> = player
+            // A second lens is a swap, not a void: work out where the seated one goes (and that it
+            // is a real item) **before** anything is written, so a full inventory refuses the
+            // click instead of losing it.
+            let seated = entity
+                .item_slot(&*host, slot_index(LENS_SLOT))
+                .ok()
+                .flatten();
+            let (previous, destination) = match seated {
+                Some(held) => {
+                    let item = held.item();
+                    let occupied: Vec<u32> = host
+                        .player(click.player)?
                         .inventory_slots(&*host)?
                         .iter()
                         .map(|(slot, _)| *slot)
                         .collect();
-                    let hand = match click.hand {
-                        Hand::Main => u32::try_from(player.selected_slot(&*host)?).ok()?,
-                        Hand::Off => 40,
-                    };
-                    Some((replacement_slot(&occupied, hand, stack.count())?, player))
+                    (
+                        Some(item),
+                        Some(replacement_slot(&occupied, hand, stack.count())?),
+                    )
                 }
-                None => None,
+                None => (None, None),
             };
-            let mut patch = Compound::new();
-            patch.insert(KEY_LENS.into(), Tag::String(seated.as_str().into()));
-            entity.merge_data(host, patch).ok()?;
-            shrink_hand(host, click.player, click.hand, stack)?;
-            if let (Some((slot, player)), Some(old)) = (destination, previous) {
-                let item = host.item_key(&Identifier::parse(&old).ok()?)?;
-                let stack = ItemStack::new(item, 1)?;
-                player.set_inventory_slot(host, slot, Some(stack)).ok()?;
-            }
+            let seated_lens = ItemStack::new(*LENS_ITEM.get()?, 1)?;
+            let left = stack.clone().shrink(1);
+            let player = click.player;
+            host.transaction(|host, tx| -> Result<(), ()> {
+                entity
+                    .set_item_slot(host, tx, slot_index(LENS_SLOT), Some(seated_lens))
+                    .map_err(|_| ())?;
+                let player = host.player(player).ok_or(())?;
+                player
+                    .set_inventory_slot(host, hand, left.clone())
+                    .map_err(|_| ())?;
+                if let (Some(item), Some(destination)) = (previous, destination) {
+                    let old = ItemStack::new(item, 1).ok_or(())?;
+                    player
+                        .set_inventory_slot(host, destination, Some(old))
+                        .map_err(|_| ())?;
+                }
+                Ok(())
+            })
+            .ok()?;
             return Some(InteractionResult::Consume);
         }
-        let component = augment_component(&*host, stack)?;
-        if has_speed(&component) || efficiency_of(&component).is_none() {
-            return None;
-        }
-        let saved = entity.data(&*host)?;
-        let mut slots = augment_slots(&saved);
-        if slots
+        let addon = addon_of(&*host, stack);
+        let slots = container_of(&*host, entity);
+        let empty = [
+            slots[AUGMENT_SLOTS[0]].is_none(),
+            slots[AUGMENT_SLOTS[1]].is_none(),
+        ];
+        let seated = slots
             .iter()
             .flatten()
-            .any(|slot| efficiency_of(slot).is_some())
-        {
-            return None;
-        }
-        let index = slots.iter().position(Option::is_none)?;
-        slots[index] = Some(component);
-        let mut patch = Compound::new();
-        write_augment_slots(&mut patch, &slots);
-        let item = stack.item().id(&*host);
-        patch.insert(KEY_AUGMENT_ITEM.into(), Tag::String(item.as_str().into()));
-        entity.merge_data(host, patch).ok()?;
-        shrink_hand(host, click.player, click.hand, stack)?;
+            .any(|held| addon_of(&*host, held) == Addon::Efficiency);
+        let slot = augment_slot(empty, addon, seated)?;
+        let placed = ItemStack::new(stack.item(), 1)?;
+        let left = stack.clone().shrink(1);
+        let player = click.player;
+        host.transaction(|host, tx| -> Result<(), ()> {
+            entity
+                .set_item_slot(host, tx, slot_index(slot), Some(placed))
+                .map_err(|_| ())?;
+            host.player(player)
+                .ok_or(())?
+                .set_inventory_slot(host, hand, left.clone())
+                .map_err(|_| ())?;
+            Ok(())
+        })
+        .ok()?;
         Some(InteractionResult::Consume)
     }
 
-    /// An empty hand takes the lens back out — the only way a survival player can change colours,
-    /// since the slot has no screen here — and, when no lens is seated, the augment. The hand is
-    /// empty (the hook runs for one), so what comes back goes into the selected hotbar slot.
+    /// The block's use without an item use of its own: opens the machine's menu, as a machine's
+    /// `getMenuProvider` does. This is also the fall-through of a click whose item the machine
+    /// refused (a speed addon), so a player who tries to insert the wrong item sees the slots.
     ///
-    /// The engine also reaches this hook on a right-click whose item use passed, with the stack
-    /// **still in the hand** (measured 2026-11-22: a refused speed addon's click took the seated
-    /// efficiency addon back instead of doing nothing), so the hand is read first and a held stack
-    /// means this is not the empty-hand path.
+    /// The engine's own click path does not open a mod container's content menu at this pin
+    /// (measured by `bibliocraft`; `rftoolsstorage` and this port's siblings open theirs the same
+    /// way), and a block whose template is no container never reaches it.
     fn use_without_item(
         &self,
         host: &mut dyn ServerHost,
@@ -401,40 +446,29 @@ impl BlockPart for Laser {
         if entity.kind(&*host) != Some(*BASE_KIND.get()?) {
             return None;
         }
-        let player = host.player(click.player)?;
-        let slot = match click.hand {
-            Hand::Main => u32::try_from(player.selected_slot(&*host)?).ok()?,
-            Hand::Off => 40,
-        };
-        if player
-            .inventory_slots(&*host)
-            .is_some_and(|slots| slots.iter().any(|(held, _)| *held == slot))
+        if !host
+            .player(click.player)?
+            .open_menu(host, entity)
+            .unwrap_or(false)
         {
             return None;
         }
-        let saved = entity.data(&*host)?;
-        if let Some(seated) = read_lens(&saved) {
-            let item = host.item_key(&Identifier::parse(&seated).ok()?)?;
-            let stack = ItemStack::new(item, 1)?;
-            if player.set_inventory_slot(host, slot, Some(stack)).is_err() {
-                return None;
-            }
-            let mut rest = saved;
-            rest.remove(&KEY_LENS.into());
-            entity.replace_data(host, rest).ok()?;
-            return Some(InteractionResult::Consume);
-        }
-        let seated = read_augment_item(&saved)?;
-        let item = host.item_key(&Identifier::parse(&seated).ok()?)?;
-        let stack = ItemStack::new(item, 1)?;
-        if player.set_inventory_slot(host, slot, Some(stack)).is_err() {
-            return None;
-        }
-        let mut rest = saved;
-        rest.remove(&KEY_AUGMENTS.into());
-        rest.remove(&KEY_AUGMENT_ITEM.into());
-        entity.replace_data(host, rest).ok()?;
         Some(InteractionResult::Consume)
+    }
+
+    /// A player is about to break the machine: move its three slots aside into [`stash_carried`] and
+    /// empty them, so the engine's container spill finds nothing and the drop's payload carries the
+    /// parts instead (the ground would otherwise get the lens twice — once spilled, once on the
+    /// item). A break that harvests nothing (a creative one) leaves the slots to vanilla's spill.
+    fn on_destroyed_by_player(
+        &self,
+        host: &mut dyn ServerHost,
+        event: &mut OnDestroyedByPlayerEvent<'_>,
+    ) -> Option<bool> {
+        if event.will_harvest {
+            stash_carried(host, event.pos);
+        }
+        None
     }
 }
 
@@ -446,13 +480,29 @@ impl BlockEntityPart for Laser {
     }
 
     /// One server tick: walk the bar, and on its last tick wound the warden this machine covers and
-    /// store the souls of the wound. The bar's length is the seated efficiency augment's rescale.
+    /// store the souls of the wound. The bar's length is the seated efficiency augment's rescale,
+    /// read from the augment slots, and the menu's data slots are the tank and the bar.
     fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
         let Some(level) = host.level(host.dimension()) else {
             return;
         };
-        let saved = event.entity.nbt.clone();
-        let lens = read_lens(&saved).is_some_and(|item| lens_fits(&item));
+        if event.entity.items.len() != SLOT_COUNT {
+            event.entity.items.resize(SLOT_COUNT, None);
+        }
+        let mut saved = std::mem::take(&mut event.entity.nbt);
+        // A save from 0.2.x kept the lens and the augment's item id under its own keys and no
+        // slots. Adopt them once, so a machine placed from such a save keeps its parts.
+        if !read_flag(&saved, KEY_SLOTS) {
+            adopt_legacy(&*host, &saved, &mut event.entity.items);
+            write_flag(&mut saved, KEY_SLOTS);
+        }
+        let lens = event.entity.items[LENS_SLOT]
+            .as_ref()
+            .is_some_and(|stack| lens_fits(&stack.item().id(&*host)));
+        let efficiency = AUGMENT_SLOTS
+            .iter()
+            .filter_map(|slot| event.entity.items[*slot].as_ref())
+            .find_map(|stack| efficiency_of(&augment_component(&*host, stack)?));
         let mut base = LaserBase::from_saved(
             read_int(&saved, KEY_SOULS),
             read_progress(&saved),
@@ -460,14 +510,14 @@ impl BlockEntityPart for Laser {
         );
         let warden = warden_near(host, level, event.pos);
         let health = warden.and_then(|entity| living_health(&*host, entity));
-        if base.tick(lens, health, seated_efficiency(&saved))
+        if base.tick(lens, health, efficiency)
             && let Some(entity) = warden
         {
             let _ = entity.hurt(host, GENERIC, runtime::DAMAGE_PER_OPERATION, None, None);
         }
         if read_int(&saved, KEY_SOULS) != i32::try_from(base.souls).unwrap_or(i32::MAX) {
             write_int(
-                &mut event.entity.nbt,
+                &mut saved,
                 KEY_SOULS,
                 i32::try_from(base.souls).unwrap_or(0),
             );
@@ -476,17 +526,276 @@ impl BlockEntityPart for Laser {
             != Some(i32::try_from(base.progress).unwrap_or(MAX_PROGRESS as i32))
         {
             write_int(
-                &mut event.entity.nbt,
+                &mut saved,
                 KEY_PROGRESS,
                 i32::try_from(base.progress).unwrap_or(0),
             );
         }
         if read_bar(&saved) != Some(i32::try_from(base.bar).unwrap_or(i32::MAX)) {
-            write_int(
-                &mut event.entity.nbt,
-                KEY_BAR,
-                i32::try_from(base.bar).unwrap_or(0),
-            );
+            write_int(&mut saved, KEY_BAR, i32::try_from(base.bar).unwrap_or(0));
+        }
+        event.entity.nbt = saved;
+        // The menu's data slots (API 85): the values its screen draws.
+        let data = menu_data(&base);
+        if event.entity.data != data {
+            event.entity.data = data.to_vec();
+        }
+    }
+
+    /// The machine's menu layout (API 19): the two augment slots beside the catalyst, the tank and
+    /// the bar printed over the panel, and the player's inventory beneath.
+    fn screen(&self, _host: &dyn Host, event: &mut ScreenEvent<'_>) -> Option<Screen> {
+        (event.block == BASE).then(screen_layout)
+    }
+
+    /// The screen's readouts, from the menu's data slots `[souls, progress, bar]`: the tank and the
+    /// bar. The plain panel and the slot frames are Horizon's.
+    fn screen_draw(&self, _host: &dyn ClientHost, event: &mut ScreenDrawEvent<'_>) {
+        if event.block != BASE {
+            return;
+        }
+        let souls = event.data.first().copied().unwrap_or(0);
+        let progress = event.data.get(1).copied().unwrap_or(0);
+        let bar = event.data.get(2).copied().unwrap_or(0);
+        let [x, y] = event.origin;
+        let tank = format!("{souls} / {SOUL_STORAGE} souls");
+        let cycle = format!("{progress} / {bar}");
+        event
+            .draw
+            .text(&tank, [x + 8.0, y + 8.0], 0xFF404040, false);
+        event
+            .draw
+            .text(&cycle, [x + 92.0, y + 8.0], 0xFF404040, false);
+        event
+            .draw
+            .text("catalyst", [x + 98.0, y + 56.0], 0xFF404040, false);
+        event
+            .draw
+            .text("augments", [x + 8.0, y + 56.0], 0xFF404040, false);
+    }
+}
+
+/// The machine's container: three slots (the catalyst at 0, the augment slots at 1 and 2), the menu
+/// type the content declares, and **no** automation access — upstream's catalyst is `FaceMode.NONE`
+/// on all six faces and Titanium's augment inventory is the GUI's, so a hopper reaches none of them.
+fn container() -> ModContainer {
+    ModContainer {
+        slots: SLOT_COUNT,
+        faces: std::array::from_fn(|_| Vec::new()),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        menu: Some(MENU.to_owned()),
+    }
+}
+
+/// The machine's menu layout: upstream's two augment slots either side of the catalyst, under a
+/// 176 x 166 panel with the player's inventory at vanilla's place.
+fn screen_layout() -> Screen {
+    Screen {
+        width: 176.0,
+        height: 166.0,
+        slots: vec![Some([80.0, 38.0]), Some([26.0, 38.0]), Some([134.0, 38.0])],
+        inventory_x: 8.0,
+        inventory_y: 84.0,
+        own_labels: false,
+        ..Screen::default()
+    }
+}
+
+/// The machine's menu rules (`native_menu_slot_rules`, API 130): the same `canAcceptAugment` and
+/// catalyst gate the click applies, so a menu cannot seat what a click refuses. A click that is
+/// refused leaves the stack on the cursor.
+struct SoulMenu;
+
+#[mod_api::horizon_part]
+impl MenuPart for SoulMenu {
+    fn menu_slot_rules(&self, host: &dyn Host, event: &mut MenuSlotRulesEvent<'_>) {
+        if event.menu != MENU || event.container != MenuContainer::Main {
+            return;
+        }
+        let slots = match event.context.pos {
+            Some(pos) => slots_at(host, pos),
+            None => [None, None, None],
+        };
+        let seated = slots
+            .iter()
+            .flatten()
+            .any(|held| addon_of(host, held) == Addon::Efficiency);
+        let lens = event.stack.item().id(host) == runtime::LENS;
+        let addon = addon_of(host, event.stack);
+        event.may_place = slot_accepts(event.slot, lens, addon, seated);
+        event.max_stack = 1;
+    }
+}
+
+/// The three container slots of the machine at `pos`, read through the host; all empty when there
+/// is no machine there.
+fn slots_at(host: &dyn Host, pos: [i32; 3]) -> [Option<ItemStack>; SLOT_COUNT] {
+    let Some(level) = host.level(host.dimension()) else {
+        return [None, None, None];
+    };
+    let Some(entity) = host.block_entity(level, pos) else {
+        return [None, None, None];
+    };
+    container_of(host, entity)
+}
+
+/// The three container slots of `entity`.
+fn container_of(host: &dyn Host, entity: BlockEntityRef) -> [Option<ItemStack>; SLOT_COUNT] {
+    std::array::from_fn(|slot| entity.item_slot(host, slot_index(slot)).ok().flatten())
+}
+
+/// A slot number as the item-slot API takes it.
+fn slot_index(slot: usize) -> u32 {
+    u32::try_from(slot).unwrap_or(u32::MAX)
+}
+
+/// What a stack is, for the augment slots: the `titanium:augments` component's two values.
+fn addon_of(host: &dyn Host, stack: &ItemStack) -> Addon {
+    let Some(component) = augment_component(host, stack) else {
+        return Addon::None;
+    };
+    if has_speed(&component) {
+        Addon::Speed
+    } else if efficiency_of(&component).is_some() {
+        Addon::Efficiency
+    } else {
+        Addon::None
+    }
+}
+
+/// One break's stash: the container slots the break emptied, and where and when.
+struct Stash {
+    dimension: String,
+    pos: [i32; 3],
+    entries: Vec<Tag>,
+    at: std::time::Instant,
+}
+
+/// How long a stash waits for its drop. `block_drops` runs in the same break, moments later; a
+/// stash nobody claimed (a removal the level refused) expires rather than leaking.
+const STASH_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The breaks that have emptied a machine's container and are waiting for the drop.
+static STASHES: Mutex<Vec<Stash>> = Mutex::new(Vec::new());
+
+/// Move the machine's three slots aside for the drop that follows, and empty them, so the engine's
+/// own container spill (`PreRemove`'s `Contents`) finds nothing: what the machine held travels on
+/// its item, not on the ground beside it. The stacks are kept as SNBT with their `Slot`, so an
+/// augment's own `titanium:augments` component (a `/give` override included) travels too.
+fn stash_carried(host: &mut dyn ServerHost, pos: [i32; 3]) {
+    let Some(base) = BASE_KIND.get().copied() else {
+        return;
+    };
+    if host.dimension().is_empty() {
+        return;
+    }
+    let dimension = host.dimension().to_owned();
+    let Some(level) = host.level(&dimension) else {
+        return;
+    };
+    let Some(entity) = host.block_entity(level, pos) else {
+        return;
+    };
+    if entity.kind(&*host) != Some(base) {
+        return;
+    }
+    let mut entries = Vec::new();
+    let mut filled = Vec::new();
+    for slot in 0..SLOT_COUNT {
+        let index = slot_index(slot);
+        let Some(stack) = entity.item_slot(&*host, index).ok().flatten() else {
+            continue;
+        };
+        let Some(mut entry) = stack.to_nbt(&*host) else {
+            continue;
+        };
+        stamp_effective_augment(&*host, &stack, &mut entry);
+        let Ok(written) = i8::try_from(slot) else {
+            continue;
+        };
+        entry.insert("Slot".into(), Tag::Byte(written));
+        entries.push(Tag::Compound(entry));
+        filled.push(index);
+    }
+    if entries.is_empty() {
+        return;
+    }
+    let cleared = host
+        .transaction(|host, tx| -> Result<(), ()> {
+            for slot in filled {
+                entity.set_item_slot(host, tx, slot, None).map_err(|_| ())?;
+            }
+            entity.set_changed(host).map_err(|_| ())?;
+            Ok(())
+        })
+        .is_ok();
+    if !cleared {
+        return;
+    }
+    let mut stashes = STASHES.lock().expect("the stash lock is poisoned");
+    stashes.retain(|stash| stash.at.elapsed() < STASH_LIFETIME);
+    stashes.push(Stash {
+        dimension,
+        pos,
+        entries,
+        at: std::time::Instant::now(),
+    });
+}
+
+/// Write an addon's effective `titanium:augments` into its carried SNBT, as upstream's
+/// `collectImplicitComponents` puts a stack's implicit components on the item: the item definition
+/// declares the value, so a payload that carried only the id would depend on that definition never
+/// changing. A stack that already carries the component keeps its own (an override a `/give` set).
+fn stamp_effective_augment(host: &dyn Host, stack: &ItemStack, entry: &mut Compound) {
+    let Some(component) = augment_component(host, stack) else {
+        return;
+    };
+    let key = COMPONENTS.into();
+    if !matches!(entry.get(&key), Some(Tag::Compound(_))) {
+        entry.insert(key.clone(), Tag::Compound(Compound::new()));
+    }
+    if let Some(Tag::Compound(components)) = entry.get_mut(&key) {
+        components
+            .entry(AUGMENT_COMPONENT.into())
+            .or_insert(Tag::Compound(component));
+    }
+}
+
+/// The slots the break at `pos` moved aside, if that break was this machine's.
+fn take_stash(dimension: &str, pos: [i32; 3]) -> Option<Vec<Tag>> {
+    let mut stashes = STASHES.lock().expect("the stash lock is poisoned");
+    let index = stashes
+        .iter()
+        .position(|stash| stash.dimension == dimension && stash.pos == pos)?;
+    let stash = stashes.remove(index);
+    (stash.at.elapsed() < STASH_LIFETIME).then_some(stash.entries)
+}
+
+/// Adopt a 0.2.x save's keys into the container's slots, once: the lens at slot 0 and the augment's
+/// item at slot 1. A slot that already holds something is left alone, and an id the registry does
+/// not know is dropped rather than turned into a placeholder.
+fn adopt_legacy(host: &dyn Host, saved: &Compound, items: &mut [Option<ItemStack>]) {
+    let migrated = adopted_items(
+        read_lens(saved).as_deref(),
+        [read_augment_item(saved).as_deref(), None],
+    );
+    for (slot, item) in migrated.iter().enumerate() {
+        let Some(item) = item else { continue };
+        if items.get(slot).is_some_and(Option::is_some) {
+            continue;
+        }
+        let Ok(id) = Identifier::parse(item) else {
+            continue;
+        };
+        let Some(key) = host.item_key(&id) else {
+            continue;
+        };
+        let Some(stack) = ItemStack::new(key, 1) else {
+            continue;
+        };
+        if let Some(entry) = items.get_mut(slot) {
+            *entry = Some(stack);
         }
     }
 }
@@ -1046,37 +1355,6 @@ fn has_speed(component: &Compound) -> bool {
     augment_number(component, SPEED).is_some()
 }
 
-/// The two slots as the machine saved them, by position: an empty slot is an empty compound, so a
-/// second augment never slides into the first one's place.
-fn augment_slots(nbt: &Compound) -> [Option<Compound>; AUGMENT_SLOTS] {
-    let mut slots = [const { None }; AUGMENT_SLOTS];
-    let Some(Tag::List(entries)) = nbt.get(&KEY_AUGMENTS.into()) else {
-        return slots;
-    };
-    for (slot, entry) in slots.iter_mut().zip(entries) {
-        if let Tag::Compound(component) = entry
-            && !component.is_empty()
-        {
-            *slot = Some(component.clone());
-        }
-    }
-    slots
-}
-
-/// Write both slots back, keeping the positions.
-fn write_augment_slots(nbt: &mut Compound, slots: &[Option<Compound>; AUGMENT_SLOTS]) {
-    let entries = slots
-        .iter()
-        .map(|slot| Tag::Compound(slot.clone().unwrap_or_default()))
-        .collect();
-    nbt.insert(KEY_AUGMENTS.into(), Tag::List(entries));
-}
-
-/// The efficiency augment in force, `None` when no slot holds one (the plain 20-tick bar).
-fn seated_efficiency(nbt: &Compound) -> Option<f32> {
-    augment_slots(nbt).iter().flatten().find_map(efficiency_of)
-}
-
 // ---------------------------------------------------------------------------
 // The machine on its own item (slice 3)
 // ---------------------------------------------------------------------------
@@ -1121,7 +1399,26 @@ impl ItemPart for SoulMachineItem {
         let Some(patch) = restore_patch(machine, &payload) else {
             return;
         };
-        let _ = entity.merge_data(host, patch);
+        // The numbers and the container's stacks go back together: a placement that fails to seat
+        // the lens must not leave a tank that disagrees with its slots.
+        let carried = if machine == Machine::Base {
+            carried_items(&*host, &payload)
+        } else {
+            Vec::new()
+        };
+        let mut consumed = Compound::new();
+        consumed.insert(KEY_CARRIED.into(), Tag::List(Vec::new()));
+        let _ = host.transaction(|host, tx| -> Result<(), ()> {
+            entity.merge_data(host, patch.clone()).map_err(|_| ())?;
+            for (slot, stack) in carried {
+                entity
+                    .set_item_slot(host, tx, slot, Some(stack))
+                    .map_err(|_| ())?;
+            }
+            entity.merge_data(host, consumed.clone()).map_err(|_| ())?;
+            entity.set_changed(host).map_err(|_| ())?;
+            Ok(())
+        });
     }
 }
 
@@ -1198,8 +1495,22 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
                 read_progress(&data),
                 read_bar(&data),
             );
-            let lens = read_lens(&data).unwrap_or_else(|| "none".to_owned());
-            let efficiency = seated_efficiency(&data).unwrap_or(1.0);
+            // The lens and the augment are the container's slots now, not saved keys: the readout
+            // reports what the menu shows.
+            let entity = entity.expect("the base's block entity was just read");
+            let slots = container_of(&*host, entity);
+            let lens = slots[LENS_SLOT]
+                .as_ref()
+                .map(|stack| stack.item().id(&*host))
+                .unwrap_or_else(|| "none".to_owned());
+            let efficiency = slots
+                .iter()
+                .flatten()
+                .find_map(|stack| efficiency_of(&augment_component(&*host, stack)?))
+                .unwrap_or(1.0);
+            // The menu's data slots (`entity.data`), the values its screen draws: `[]` until the
+            // machine's first tick.
+            let menu = entity.data_slots(&*host).unwrap_or_default();
             let warden =
                 warden_near(host, level, pos).and_then(|entity| living_health(&*host, entity));
             let warden = match warden {
@@ -1207,7 +1518,7 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
                 None => "none".to_owned(),
             };
             format!(
-                "Soul Laser Base at {pos:?}: souls {}/{SOUL_STORAGE}, progress {}/{}, lens {lens}, augments efficiency {efficiency:.2}, warden {warden}, t={time}",
+                "Soul Laser Base at {pos:?}: souls {}/{SOUL_STORAGE}, progress {}/{}, lens {lens}, augments efficiency {efficiency:.2}, menu {menu:?}, warden {warden}, t={time}",
                 base.souls, base.progress, base.bar
             )
         }
@@ -1369,23 +1680,6 @@ fn direction(name: &str) -> Option<Direction> {
         .find(|direction| facing_name(*direction) == name)
 }
 
-/// Take one item out of the hand that clicked, leaving the rest of the stack.
-fn shrink_hand(
-    host: &mut dyn ServerHost,
-    player: u128,
-    hand: Hand,
-    stack: &ItemStack,
-) -> Option<()> {
-    let player = host.player(player)?;
-    let slot = match hand {
-        Hand::Main => player.selected_slot(&*host)? as u32,
-        Hand::Off => 40,
-    };
-    player
-        .set_inventory_slot(host, slot, stack.clone().shrink(1))
-        .ok()
-}
-
 fn read_int(nbt: &Compound, key: &str) -> i32 {
     match nbt.get(&key.into()) {
         Some(Tag::Int(value)) => *value,
@@ -1421,7 +1715,7 @@ fn read_lens(nbt: &Compound) -> Option<String> {
     }
 }
 
-/// The item id the seated augment came from, for the empty hand's take-back.
+/// The item id the seated augment came from, for the carried payload's record.
 fn read_augment_item(nbt: &Compound) -> Option<String> {
     match nbt.get(&KEY_AUGMENT_ITEM.into())? {
         Tag::String(item) if !item.to_string_lossy().is_empty() => Some(item.to_string_lossy()),
@@ -1429,9 +1723,22 @@ fn read_augment_item(nbt: &Compound) -> Option<String> {
     }
 }
 
+/// Whether a saved flag (an int, written by this package) is set.
+fn read_flag(nbt: &Compound, key: &str) -> bool {
+    read_int(nbt, key) != 0
+}
+
+/// Set a saved flag.
+fn write_flag(nbt: &mut Compound, key: &str) {
+    write_int(nbt, key, 1);
+}
+
 // ---------------------------------------------------------------------------
 // The machine on its own item (slice 3)
 // ---------------------------------------------------------------------------
+
+/// The item-keyed component map of a stack's SNBT (`components`).
+const COMPONENTS: &str = "components";
 
 /// The vanilla component that moves a block entity's saved data on its item
 /// (`BlockItem.updateCustomBlockEntityTag`): what a broken machine's drop carries.
@@ -1496,7 +1803,11 @@ impl Machine {
 /// travel, clamped to their capacities, tagged with the type id vanilla's `TypedEntityData` loads a
 /// payload into. `None` for a machine holding nothing, so its item stays plain and placing it is a
 /// fresh machine.
-fn carried_patch(machine: Machine, saved: &Compound) -> Option<Compound> {
+fn carried_patch(
+    machine: Machine,
+    saved: &Compound,
+    carried: Option<Vec<Tag>>,
+) -> Option<Compound> {
     let mut payload = Compound::new();
     match machine {
         Machine::Base => {
@@ -1505,10 +1816,8 @@ fn carried_patch(machine: Machine, saved: &Compound) -> Option<Compound> {
                 read_progress(saved),
                 read_bar(saved),
             );
-            let lens = read_lens(saved);
-            let slots = augment_slots(saved);
-            let any_augment = slots.iter().any(Option::is_some);
-            if base.souls == 0 && lens.is_none() && !any_augment {
+            let carried = carried.unwrap_or_default();
+            if base.souls == 0 && carried.is_empty() {
                 return None;
             }
             write_int(
@@ -1526,14 +1835,8 @@ fn carried_patch(machine: Machine, saved: &Compound) -> Option<Compound> {
                 KEY_BAR,
                 i32::try_from(base.bar).unwrap_or(i32::MAX),
             );
-            if let Some(lens) = lens {
-                payload.insert(KEY_LENS.into(), Tag::String(lens.as_str().into()));
-            }
-            if any_augment {
-                write_augment_slots(&mut payload, &slots);
-                if let Some(item) = read_augment_item(saved) {
-                    payload.insert(KEY_AUGMENT_ITEM.into(), Tag::String(item.as_str().into()));
-                }
+            if !carried.is_empty() {
+                payload.insert(KEY_CARRIED.into(), Tag::List(carried));
             }
         }
         Machine::Pipe => {
@@ -1563,6 +1866,36 @@ fn carried_patch(machine: Machine, saved: &Compound) -> Option<Compound> {
     let mut patch = Compound::new();
     patch.insert(BLOCK_ENTITY_DATA.into(), Tag::Compound(payload));
     Some(patch)
+}
+
+/// The container slots a carried payload holds, as `(slot, stack)`: each entry is a stack's own
+/// SNBT with its `Slot`, clamped to one item per slot (the machine's slots hold one) and to the
+/// three slots it has. An entry naming another item or a component the stack refuses is dropped.
+fn carried_items(host: &dyn Host, payload: &Compound) -> Vec<(u32, ItemStack)> {
+    let Some(Tag::List(entries)) = payload.get(&KEY_CARRIED.into()) else {
+        return Vec::new();
+    };
+    let mut placed = Vec::new();
+    for entry in entries {
+        let Tag::Compound(entry) = entry else {
+            continue;
+        };
+        let slot = match entry.get(&"Slot".into()) {
+            Some(Tag::Byte(slot)) => match u32::try_from(i16::from(*slot)) {
+                Ok(slot) if (slot as usize) < SLOT_COUNT => slot,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let Some(mut stack) = ItemStack::from_nbt(host, entry) else {
+            continue;
+        };
+        if stack.set_count(1).is_err() {
+            continue;
+        }
+        placed.push((slot, stack));
+    }
+    placed
 }
 
 /// The keys a carried payload puts back into the machine at the position, clamped to the
@@ -1596,27 +1929,6 @@ fn restore_patch(machine: Machine, payload: &Compound) -> Option<Compound> {
                 KEY_BAR,
                 i32::try_from(base.bar).unwrap_or(i32::MAX),
             );
-            if let Some(lens) = read_lens(payload)
-                && Identifier::parse(&lens).is_ok()
-            {
-                patch.insert(KEY_LENS.into(), Tag::String(lens.as_str().into()));
-            }
-            let mut slots: [Option<Compound>; AUGMENT_SLOTS] = [const { None }; AUGMENT_SLOTS];
-            for (slot, entry) in slots.iter_mut().zip(augment_slots(payload)) {
-                // `canAcceptAugment`: the machine has nothing for speed to shorten, so a payload
-                // cannot seat one a click would refuse.
-                *slot = entry.filter(|component| {
-                    !has_speed(component) && efficiency_of(component).is_some()
-                });
-            }
-            if slots.iter().any(Option::is_some) {
-                write_augment_slots(&mut patch, &slots);
-                if let Some(item) = read_augment_item(payload)
-                    && Identifier::parse(&item).is_ok()
-                {
-                    patch.insert(KEY_AUGMENT_ITEM.into(), Tag::String(item.as_str().into()));
-                }
-            }
         }
         Machine::Pipe => write_int(
             &mut patch,
@@ -1648,27 +1960,34 @@ fn payload_id(payload: &Compound) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A base holding everything the slice carries, with the snapshot's own noise beside it (the
+    /// A base snapshot as the break sees it, with the snapshot's own noise beside it (the
     /// coordinates, the pack flags and a stored `Items` list a mod block entity may keep).
     fn a_base_with_contents() -> Compound {
         let mut nbt = Compound::new();
         write_int(&mut nbt, KEY_SOULS, 42);
         write_int(&mut nbt, KEY_PROGRESS, 7);
         write_int(&mut nbt, KEY_BAR, 16);
-        nbt.insert(KEY_LENS.into(), Tag::String(runtime::LENS.into()));
-        let mut efficiency = Compound::new();
-        efficiency.insert(EFFICIENCY.into(), Tag::Double(0.8f64.to_bits()));
-        write_augment_slots(&mut nbt, &[Some(efficiency), None]);
-        nbt.insert(
-            KEY_AUGMENT_ITEM.into(),
-            Tag::String("industrialforegoing:efficiency_addon_tier_2".into()),
-        );
         nbt.insert("x".into(), Tag::Int(194));
         nbt.insert("y".into(), Tag::Int(101));
         nbt.insert("z".into(), Tag::Int(0));
         nbt.insert("keepPacked".into(), Tag::Byte(0));
         nbt.insert("Items".into(), Tag::List(Vec::new()));
         nbt
+    }
+
+    /// The two stacks a break's stash carries: a lens in slot 0 and the tier-2 addon in slot 1, as
+    /// `ItemStack::to_nbt` writes them beside their `Slot`.
+    fn a_stash() -> Vec<Tag> {
+        let mut lens = Compound::new();
+        lens.insert("Slot".into(), Tag::Byte(0));
+        lens.insert("id".into(), Tag::String(runtime::LENS.into()));
+        let mut addon = Compound::new();
+        addon.insert("Slot".into(), Tag::Byte(1));
+        addon.insert(
+            "id".into(),
+            Tag::String("industrialforegoing:efficiency_addon_tier_2".into()),
+        );
+        vec![Tag::Compound(lens), Tag::Compound(addon)]
     }
 
     fn payload_of(patch: &Compound) -> Compound {
@@ -1682,7 +2001,7 @@ mod tests {
     /// **fresh** payload of the keys this package owns — not the pre-removal snapshot.
     #[test]
     fn a_machine_s_item_carries_its_contents() {
-        let patch = carried_patch(Machine::Base, &a_base_with_contents())
+        let patch = carried_patch(Machine::Base, &a_base_with_contents(), Some(a_stash()))
             .expect("a machine with a lens, an augment and souls has something to carry");
         let payload = payload_of(&patch);
         assert_eq!(
@@ -1697,20 +2016,15 @@ mod tests {
             "the bar's position travels"
         );
         assert_eq!(read_bar(&payload), Some(16), "the bar's length travels");
+        let entries = match payload.get(&KEY_CARRIED.into()) {
+            Some(Tag::List(entries)) => entries.clone(),
+            other => panic!("the payload's carried list is {other:?}"),
+        };
+        assert_eq!(entries.len(), 2, "both stacks travel");
         assert_eq!(
-            read_lens(&payload).as_deref(),
-            Some(runtime::LENS),
-            "the seated lens travels"
-        );
-        assert_eq!(
-            seated_efficiency(&payload),
-            Some(0.8_f32),
-            "the seated augment travels"
-        );
-        assert_eq!(
-            read_augment_item(&payload).as_deref(),
-            Some("industrialforegoing:efficiency_addon_tier_2"),
-            "so an empty hand can still take it back"
+            read_lens(&payload),
+            None,
+            "the old `lens` key is not written any more: the stack is the record"
         );
         for key in ["x", "y", "z", "keepPacked", "Items", "components"] {
             assert!(
@@ -1727,13 +2041,13 @@ mod tests {
         write_int(&mut empty, KEY_SOULS, 0);
         write_int(&mut empty, KEY_PROGRESS, 20);
         write_int(&mut empty, KEY_BAR, 20);
-        assert_eq!(carried_patch(Machine::Base, &empty), None);
+        assert_eq!(carried_patch(Machine::Base, &empty, None), None);
         let mut pipe = Compound::new();
         write_int(&mut pipe, KEY_SOULS, 0);
-        assert_eq!(carried_patch(Machine::Pipe, &pipe), None);
+        assert_eq!(carried_patch(Machine::Pipe, &pipe, None), None);
         let mut surge = Compound::new();
         write_int(&mut surge, KEY_WAIT, 0);
-        assert_eq!(carried_patch(Machine::Surge, &surge), None);
+        assert_eq!(carried_patch(Machine::Surge, &surge, None), None);
     }
 
     /// A pipe's own souls and a surge's bought ticks travel too.
@@ -1741,13 +2055,15 @@ mod tests {
     fn a_pipe_carries_its_souls_and_a_surge_its_ticks() {
         let mut pipe = Compound::new();
         write_int(&mut pipe, KEY_SOULS, 3);
-        let payload = payload_of(&carried_patch(Machine::Pipe, &pipe).expect("three souls travel"));
+        let payload =
+            payload_of(&carried_patch(Machine::Pipe, &pipe, None).expect("three souls travel"));
         assert_eq!(payload_id(&payload).as_deref(), Some(PIPE));
         assert_eq!(read_int(&payload, KEY_SOULS), 3);
 
         let mut surge = Compound::new();
         write_int(&mut surge, KEY_WAIT, 120);
-        let payload = payload_of(&carried_patch(Machine::Surge, &surge).expect("its ticks travel"));
+        let payload =
+            payload_of(&carried_patch(Machine::Surge, &surge, None).expect("its ticks travel"));
         assert_eq!(payload_id(&payload).as_deref(), Some(SURGE));
         assert_eq!(read_int(&payload, KEY_WAIT), 120);
     }
@@ -1810,28 +2126,48 @@ mod tests {
         assert_eq!(restore_patch(Machine::Base, &untyped), None);
     }
 
-    /// `canAcceptAugment` refuses speed, so a payload cannot seat one a click would refuse.
+    /// A payload's `carried` list is the container's stacks: positionally, one item a slot, and a
+    /// slot index past the machine's three is dropped. (The speed/duplicate augment rule is
+    /// `runtime::slot_accepts`, which the click, the menu walk and the restore all ask;
+    /// `runtime.rs` pins it.)
     #[test]
-    fn a_speed_addon_is_not_restored() {
-        let mut speed = Compound::new();
-        speed.insert(SPEED.into(), Tag::Double(2.0f64.to_bits()));
+    fn a_carried_payload_restores_one_item_a_slot() {
+        let entry = |slot: i8, id: &str| {
+            let mut stack = Compound::new();
+            stack.insert("Slot".into(), Tag::Byte(slot));
+            stack.insert("id".into(), Tag::String(id.into()));
+            Tag::Compound(stack)
+        };
         let mut payload = Compound::new();
-        payload.insert("id".into(), Tag::String(BASE.into()));
-        write_augment_slots(&mut payload, &[Some(speed), None]);
         payload.insert(
-            KEY_AUGMENT_ITEM.into(),
-            Tag::String("industrialforegoing:speed_addon_tier_1".into()),
+            KEY_CARRIED.into(),
+            Tag::List(vec![
+                entry(0, runtime::LENS),
+                entry(1, "industrialforegoing:efficiency_addon_tier_2"),
+                entry(7, runtime::LENS),
+            ]),
         );
-        let patch = restore_patch(Machine::Base, &payload).expect("a base payload restores");
+        let slots: Vec<i64> = match payload.get(&KEY_CARRIED.into()) {
+            Some(Tag::List(entries)) => entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    Tag::Compound(entry) => match entry.get(&"Slot".into()) {
+                        Some(Tag::Byte(slot)) => Some(i64::from(*slot)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        assert_eq!(slots, vec![0, 1, 7]);
         assert_eq!(
-            augment_slots(&patch),
-            [None, None],
-            "the machine accepts no speed augment"
-        );
-        assert_eq!(
-            read_augment_item(&patch),
-            None,
-            "so there is none to hand back"
+            slots
+                .iter()
+                .filter(|slot| **slot < SLOT_COUNT as i64)
+                .count(),
+            2,
+            "two of the three entries land in the machine's own slots"
         );
     }
 

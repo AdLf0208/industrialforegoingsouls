@@ -1,6 +1,6 @@
 id = "industrialforegoingsouls"
 name = "Industrial Foregoing: Souls"
-version = "0.2.3"
+version = "0.2.4"
 description = """A port of Industrial Foregoing: Souls for Horizon: the three blocks that are one soul
 economy. The Soul Laser Base seats an `industrialforegoing:blue_laser_lens` in its catalyst slot and,
 with a warden inside the box above it, hurts it for 4 every 20 ticks and stores 2 souls of the damage
@@ -9,7 +9,9 @@ any adjacent soul handler into it. The Soul Surge spends one soul for 300 ticks 
 block it is mounted on four times at a 3% chance a tick, and stops while it is powered. An
 `industrialforegoing:efficiency_addon_*` seated in the machine rescales its bar to
 `floor(20 x efficiency)` after an operation, exactly as Titanium's augment inventory does; a speed
-addon is refused. The package also carries the mod's one `industrialforegoing:laser_drill_ore`
+addon is refused. The laser base opens its own menu, as upstream's Titanium screen does: one catalyst slot and two
+augment slots, with a screen that draws the tank and the bar and three data slots that carry them.
+The package also carries the mod's one `industrialforegoing:laser_drill_ore`
 recipe (an echo shard, from the `industrialforegoingsouls:deep_dark` biome tag it declares), so the
 parent's ore laser base can mine it. The Soul Pipe and the Soul Surge hold water as upstream's
 `SimpleWaterloggedBlock` does: a water bucket fills the block's `waterlogged` state, an empty bucket
