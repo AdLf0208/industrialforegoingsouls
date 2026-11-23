@@ -1,4 +1,4 @@
-# `industrialforegoingsouls` — Industrial Foregoing: Souls 0.2.1
+# `industrialforegoingsouls` — Industrial Foregoing: Souls 0.2.2
 
 The three blocks that are one soul economy, ported from **Industrial Foregoing: Souls 1.21.1-1.10.7**
 into Rust for Horizon 26.3 at the campaign pin.
@@ -10,10 +10,10 @@ into Rust for Horizon 26.3 at the campaign pin.
 | approach (`horizon/docs/modpacks.md`) | **agent port** of the behaviour, with the jar's content carried (models, blockstates, textures, recipes, loot, tags) |
 | pin | Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0` |
 | upstream | `InnovativeOnlineIndustries/Industrial-Foregoing-Souls`, commit `bf736d2f1140da25747ab97d8c160b44d8a0bb7f` (2026-01-10, the jar's `1.10.7`); the jar is `ports/_shared/licence-cache/industrial-foregoing-souls-1.21.1-1.10.7.jar`, sha256 `f4fb3640…67ec` |
-| package | `industrialforegoingsouls.hmod`, **83,745 B**, sha256 `75ebd87afc83cf52197c522184b72f3968fbdf57ab607bcf1d76baf8b70b7c7c`, 63 entries, no packed `Cargo.lock` |
-| registry | ours on `main` (`owners = ["AdLf0208"]`) → an **Update** to 0.2.1 (`[[versions]]` appended, never rewritten) |
+| package | `industrialforegoingsouls.hmod`, **96,432 B**, sha256 `7397e359a64ddb7b34f46e870ae8a8dc7c60ec2da15145b0a9dc735a50fb0e16`, 63 entries, no packed `Cargo.lock` |
+| registry | **first publication**, open on PR #1605 (`0.2.1`); this is `0.2.2` appended to that PR, title `Add industrialforegoingsouls 0.2.2` (the id is not on `main`) |
 
-Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-review
 
 ## 1. The slice
 
@@ -49,10 +49,29 @@ which is what unblocked this port (the earlier pass stopped at
 ```
 
 That is the mod's own required dependency (upstream declares
-`dependencies = [{ modId = "industrialforegoing", type = "required" }]`), and `horizon-mod.toml` has
-no dependency field to declare it in, so the refusal is the load. **The in-game leg therefore builds
-one game carrying both mods** (`tools/e2e-two-mod.sh`: the launcher's `native-build <folder>` takes a
-folder of mod folders); `ports/_shared/evidence/industrialforegoingsouls-e2e/` is its output.
+`dependencies = [{ modId = "industrialforegoing", type = "required" }]`). **0.2.2 declares it**, with
+the pin's schema (`crates/horizon-mod-package` at the pin: `version`, `optional`, `side`, `reason`,
+`url`; reason ≤ 512 bytes, url `https://`):
+
+```toml
+[dependencies]
+industrialforegoing = { version = ">=0.2.7", reason = "…", url = "https://github.com/AdLf0208/industrialforegoing" }
+```
+
+A bundle without the parent is now refused **by name** before anything starts, rather than failing
+later at registration:
+
+```
+error: industrialforegoingsouls requires missing mod industrialforegoing (The Soul Laser Base seats
+industrialforegoing:blue_laser_lens and the carried laser_drill_ore/echo_shard recipe is the
+parent's type, registered from 0.2.7. https://github.com/AdLf0208/industrialforegoing)
+```
+
+(`ports/_shared/evidence/industrialforegoingsouls/sdk-dependency-refusal.log`, one-module
+`native-build`, exit 1.) **The in-game leg therefore builds one game carrying both mods**
+(`tools/e2e-two-mod.sh`: the launcher's `native-build <folder>` takes a folder of mod folders) and
+the build compiles `industrialforegoing (1 of 2)` then `industrialforegoingsouls (2 of 2)`;
+`ports/_shared/evidence/industrialforegoingsouls-e2e/` is its output.
 
 ### 1.2 The 0.2.1 slice: the rest of the jar's own surface
 
@@ -78,6 +97,27 @@ Two families the 0.2.0 package left out, both in the jar and both `machines` sha
 The Sculk Soul Tank screen addon stays **not ported** (the parent ships no Sculk Soul Tank GUI to
 add to), and the two acceleration branches and the comparator stay `blocked` for the same hook gaps
 as 0.2.0 — nothing in this pin changed for them.
+
+### 1.3 The 0.2.2 review fixes (reviewer `levzzz5154`, static review of `e2062f35`)
+
+Four findings, fixed here without a new family:
+
+1. **The parent is declared** (above).
+2. **The catalyst lens is a swap.** A second blue lens used to overwrite the saved one and eat the
+   new item, voiding the old one. `use_item_on` now reserves a destination first
+   (`runtime::replacement_slot`: the hand's slot when the held stack empties, else the first free
+   hotbar/main/off-hand slot, `None` when the inventory is full so the click is refused), validates
+   the old item id, then merges, shrinks the hand and hands the old lens back. The broken-machine
+   carry (`block_drops` → fresh `minecraft:block_entity_data` → `on_block_placed_by`) was already in
+   the 0.2.2 tree; this run proves it in game for the first time (phase P).
+3. **The pipe walk is bounded and once a tick.** `runtime::grow_component` visits each cell through a
+   `HashSet` (no `Vec::contains`) and stops at `MAX_NETWORK_PIPES = 4096`;
+   `runtime::NetworkCache` keys a walked component on the level and its game time, so the second
+   pipe of a component in one tick reuses it (`with_pipe_network`). Only pipes whose souls moved are
+   written back. A placement or a break drops the cache. Tests: a 200-pipe line is walked once with
+   ≤ 6 probes a pipe and the other 199 pipes ask the level nothing; a 5,000-pipe line stops at 100
+   with a 100 budget.
+4. **The MIT notice is upstream's verbatim**, `Copyright (c) 2021 Buuz135, Rid`.
 
 ## 2. The family table (from the jar, before any code)
 
@@ -109,20 +149,26 @@ Each of these is a decision the pin forced; none of them fakes a rule.
 1. **The network is the connected pipes, not a Titanium graph.** Horizon has no
    `block_network`/`NetworkManager`, and no capability for a mod's own handler
    (`SoulCapabilities.BLOCK` is NeoForge's). The pipe walks its six neighbours through pipe blocks
-   (a `VecDeque` BFS in `lib.rs::walk`), each pipe holds up to 4 souls, and
-   `runtime::Network` adds/drains in walk order. Capacity is `4 × pipes`, the same number upstream
-   computes (`getMaxSouls = graph.getElements().size() * SOUL_AMOUNT_PER_PIPE`); the difference is
-   that upstream keeps the total on the network object and this port keeps it per pipe, which
-   survives a save with no network registry. **The surge is not counted as an element** (upstream's
-   graph counts it), so a surge-only network has capacity 0 — nothing can fill it either way.
+   (`runtime::grow_component`: set-based visitation, one probe a cell, cut at
+   `MAX_NETWORK_PIPES = 4096`), and `runtime::NetworkCache` walks each connected component **once a
+   tick** so every other pipe of it reuses the positions and souls; only pipes whose souls moved
+   are written back. Each pipe holds up to 4 souls and `runtime::Network` adds/drains in walk order.
+   Capacity is `4 × pipes`, the same number upstream computes (`getMaxSouls =
+   graph.getElements().size() * SOUL_AMOUNT_PER_PIPE`); the difference is that upstream keeps the
+   total on the network object and this port keeps it per pipe, which survives a save with no
+   network registry. **The surge is not counted as an element** (upstream's graph counts it), so a
+   surge-only network has capacity 0 — nothing can fill it either way.
 2. **The pipe's handler is found by block entity type, not by capability.** The only handler this
    package ships is the laser base, and its `fill` returns 0 (`SLBSoulCap.fill`), so the pull is the
    whole transfer — the same branch upstream takes against the same handler. A soul handler in
    *another* mod would need a capability API (recorded as an issue-shaped gap, not worked around).
 3. **The catalyst slot is a click, not a GUI.** Titanium's screens are the parent's; the slot is
    `BlockPart::use_item_on` (right-click with the lens seats it, taking one out of the hand) and
-   `BlockPart::use_without_item` (an empty hand takes it back into the selected slot). Upstream's
-   `SidedInventoryComponent` also lets a hopper in; this port has no item capability on the block.
+   `BlockPart::use_without_item` (an empty hand takes it back into the selected slot). A second lens
+   is a swap, as the GUI's cursor would be: the old lens goes back into the hand that empties (or
+   the first free slot), and a full inventory refuses the click rather than voiding it
+   (`runtime::replacement_slot`). Upstream's `SidedInventoryComponent` also lets a hopper in; this
+   port has no item capability on the block.
 4. **The surge's `enabled` and connection states are not declared.** A block state cannot be
    rewritten from a tick or a `neighbor_changed` (`LevelTicksHost` has no write) without
    `LevelRef::set_block`, which recreates the block entity and would drop the surge's counter. So the
@@ -230,23 +276,53 @@ fall-through (§3 item 8), and phase E measuring the pipe against a machine that
 because D3 left the lens seated (fixed by taking the lens out first — the tank must be still for a
 transfer to be readable).
 
+### 4.2 The 0.2.2 review fixes' red → green
+
+The two new pure rules were written first, against `todo!()` stubs, with the 29 carried tests
+running unchanged; only the review's rules failed:
+
+```
+$ cargo test
+test runtime::tests::a_cached_component_keeps_the_ticks_transfer ... FAILED
+test runtime::tests::a_network_walk_stops_at_the_budget ... FAILED
+test runtime::tests::a_replaced_lens_goes_back_into_the_hand_or_the_first_free_slot ... FAILED
+test runtime::tests::a_two_hundred_pipe_line_is_walked_once_a_tick ... FAILED
+thread 'runtime::tests::a_replaced_lens_goes_back_into_the_hand_or_the_first_free_slot' panicked at src/runtime.rs:138:5:
+not yet implemented: slice 0.2.2 review: the replaced lens needs a slot before the new one is consumed
+thread 'runtime::tests::a_two_hundred_pipe_line_is_walked_once_a_tick' panicked at src/runtime.rs:149:5:
+not yet implemented: slice 0.2.2 review: the pipe walk visits each cell once and stops at the budget
+test result: FAILED. 29 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+(`ports/_shared/evidence/industrialforegoingsouls/sdk-test-red-review.log`.) Green:
+
+```
+$ cargo test
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+(`sdk-test.log`.) The dependency red is the launcher's refusal
+(`sdk-dependency-refusal.log`), and the in-game reds are the two new selftest legs below.
+
 ## 5. In-game evidence (fail-capable)
 
 `ports/_shared/evidence/industrialforegoingsouls-e2e/`, all through `tools/e2e-two-mod.sh` (one game
-carrying this port **and** its parent, 0.2.8 when the legs ran). The 0.2.0 legs are kept beside the 0.2.1 ones with a
-`-0.2.0` suffix:
+carrying this port **and** its parent, 0.2.8 when the legs ran). The 0.2.0 legs are kept with a
+`-0.2.0` suffix and the 0.2.1 ones with `-0.2.1`; the unsuffixed logs are this 0.2.2 run:
 
 | leg | verdict | what it proves |
 |---|---|---|
-| `e2e-launcher.log` (0.2.1) | **`PASS` + `EXIT:0`** | the whole 0.2.1 scenario below, phases A–N, D2–D3 and M2 |
+| `e2e-launcher.log` (0.2.2) | **`PASS` + `EXIT:0`** | the whole 0.2.2 scenario, phases A–N, D2–D3, K–L, P–Q and M2 |
 | `e2e-launcher-control.log` | `FAIL: the game refused industrialforegoingsouls:soul_laser_base` + `EXIT:1` | the same script on the same Nightly **without** the package |
 | `e2e-launcher-selftest.log` | `FAIL: selftest: the soul tank is 0, expected anything but 0` + `EXIT:1` | the lens differential can fail |
 | `e2e-launcher-selftest-augment.log` | `FAIL: selftest: the shortened bar gained 22 souls, expected no more than the plain bar's 16` + `EXIT:1` | the augment's rate differential can fail |
 | `e2e-launcher-selftest-laser.log` | `FAIL: selftest: the base yielded minecraft:echo_shard x1, expected an empty output slot` + `EXIT:1` | the ore differential can fail |
 | `e2e-launcher-selftest-grow.log` | `FAIL: selftest: the control wheat's age is 0, expected it above 0` + `EXIT:1` | the acceleration differential can fail |
+| `e2e-launcher-selftest-carry.log` | `FAIL: selftest: the restored tank is 30, expected 0` + `EXIT:1` | the carried contents are real, not a stale machine |
+| `e2e-launcher-selftest-replace.log` | `FAIL: selftest: the lens the swap returned is 1, expected 0` + `EXIT:1` | the replaced lens is returned, not voided |
 
 `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` →
-`logs=10 ok=10 missing-exit=0 bad-exit=0` (the six 0.2.1 legs and the four 0.2.0 ones).
+`logs=15 ok=15 missing-exit=0 bad-exit=0` (four 0.2.0, six 0.2.1, five 0.2.2).
 
 **The lens differential**, the assertion the whole mod hangs on, from the transcript:
 
@@ -283,6 +359,27 @@ Soul Laser Base at [194, 101, 0]: souls 40/1350, progress 8/16, lens industrialf
   efficiency 0.80: bar 16, 22 souls in the window (the plain bar fits 8 operations)
 ```
 
+**The carried contents**, phase P of the 0.2.2 transcript — the item's own `minecraft:block_entity_data`
+and the machine it places back as:
+
+```
+  before the break: souls 30, progress 10/16, lens industrialforegoing:blue_laser_lens, efficiency 0.80
+  Player07876 has the following entity data: [… {components: {"minecraft:block_entity_data": {bar: 16,
+    augment_item: "industrialforegoing:efficiency_addon_tier_2", souls: 30, progress: 12,
+    id: "industrialforegoingsouls:soul_laser_base", lens: "industrialforegoing:blue_laser_lens",
+    augments: [{Efficiency: 0.8d}, {}]}}, count: 1, Slot: 1b, id: "…soul_laser_base"}]
+  the drop carries souls 30, progress 12/16, lens industrialforegoing:blue_laser_lens, efficiency 0.8
+  placed back: souls 30, progress 4/16, lens industrialforegoing:blue_laser_lens, efficiency 0.80
+  … the empty machine's item: no components block, and it places as a fresh 12/20 machine
+```
+
+**The lens swap**, phase Q — the counterfactual is `SELFTEST=replace` above:
+
+```
+  Soul Laser Base at [190, 101, 13]: … lens industrialforegoing:blue_laser_lens …
+  a second lens: the machine keeps one, the first is back in the inventory (held 1)
+```
+
 **The ore differential**, phase M2 — the parent's machines, this package's data:
 
 ```
@@ -305,7 +402,7 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
 | the lens gate (blue only, none without) | **tested** — phases B and D, the differential above |
 | the 1,350 cap | **tested** — `the_tank_stops_at_1350` (unit) |
 | the comparator output | **blocked(`analog-output-needs-block-entity-read`)** — formula unit-tested |
-| pipe network 4 a pipe, 4-pull from the machine | **tested** — phase E: 50 → 46 with one pipe (4/4), 46 → 42 with two (8/8) |
+| pipe network 4 a pipe, 4-pull from the machine | **tested** — phase E: 50 → 46 with one pipe (4/4), 46 → 42 with two (8/8); the walk is set-based, bounded and once a tick (`a_two_hundred_pipe_line_is_walked_once_a_tick`, `a_network_walk_stops_at_the_budget`, `a_cached_component_keeps_the_ticks_transfer`) |
 | the pipe's shape and joins | **carried** — `chorus_plant` template + `connects_to` (not asserted in game; the state string shows `east=true` next to its neighbour) |
 | surge placement (`state_for_placement` → `facing` from the clicked face) | **tested** — phase F: a top-face placement reads `facing=up` |
 | surge spends one soul for 300 ticks | **tested** — phase G: network 3 → 2, `wait` 293 → 200 over 400 ticks |
@@ -315,7 +412,8 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
 | loot tables | **tested** — phase L: each block breaks in survival and drops itself |
 | tags (`cant_accelerate`, `c:tick_acceleration_disallowed`, `mineable/pickaxe`, `soul_connects`, `c:stones`) | **tested** as they are consumed (the surge's own block is in both cant-accelerate tags, the recipes use `c:stones`, the pickaxe tag is what the survival break needs) |
 | the efficiency augment: seating by click, `canAcceptAugment` (speed refused, a second efficiency refused), the bar `floor(20 × eff)` after the first operation, the take-back | **tested** — phases D2–D3: `0.80` seated and the addon gone from the hand, `20` → `16`, 20 souls in a 160-tick window where the plain bar fits 8 operations; a speed addon still `held 1` and the efficiency unchanged; the unit tests pin `bar_max` (0.9 → 18, 0.8 → 16) and the first-bar-stays-20 rule |
-| the augment's contents travelling on a broken machine | **not ported** — this port's blocks drop themselves only (0.2.0 behaviour, unchanged); the parent's `block_drops` + `minecraft:block_entity_data` route is the pattern for a later slice |
+| the machine's contents travelling on its item (tank, bar, lens, augment; pipe souls; surge ticks) | **tested** — phase P: the drop's `minecraft:block_entity_data` names all of them, placing it back restores `souls 30`, a 16-tick bar, `lens industrialforegoing:blue_laser_lens` and `augments efficiency 0.80`; an empty machine's item has no payload and places as a fresh 20-tick machine; `SELFTEST=carry` fails on the restored tank |
+| a second catalyst lens replacing the seated one | **tested** — phase Q: the machine keeps one lens and the first comes back to the inventory (`held 1`); `SELFTEST=replace` fails on the returned lens |
 | `laser_drill_ore/echo_shard` + the `deep_dark` biome tag | **tested** — phase M2: the parent's ore laser base reads `11/11` recipes, resolves `industrialforegoingsouls:laser_drill_ore/echo_shard` only in `minecraft:deep_dark` at depth 0, and one completed bar yields `minecraft:echo_shard x1` for 1,000 FE |
 | the recipe advancement | **carried** — the jar's own, loaded without error (the launch's load-error count is 0) |
 | Sculk Soul Tank screen addon | **not ported** — parent GUI |
@@ -338,15 +436,17 @@ Ore Laser Base at [200, 101, 6]: progress 0/100, depth 0, biome minecraft:deep_d
 Closed by 0.2.1: ~~`blocked(missing-parent-recipe-type: industrialforegoing:laser_drill_ore)`~~ — the
 parent's 0.2.7 registers the type and this package now carries its own recipe for it.
 
-Still open, and new:
+Closed by 0.2.2: ~~a broken machine does not carry its contents~~ — `block_drops` writes a fresh
+`minecraft:block_entity_data` payload on the drop and `on_block_placed_by` merges it back, clamped
+(phase P); ~~a second lens voids the first~~ — the new lens swaps with the seated one (phase Q);
+~~the parent is undeclared~~ — `[dependencies]` now names it (the refusal log above); ~~the pipe
+walk is cubic~~ — set-based, bounded and cached once a tick (§1.3 item 3).
+
+Still open:
 
 - **The augment slots have no screen.** Upstream's two slots are Titanium's GUI; this port seats and
   returns them by right-click. A player cannot see the slots without reading
   `/industrialforegoingsouls info`.
-- **A broken machine does not carry its contents** (the augment or the lens). The pin's route —
-  `block_drops` writing `minecraft:block_entity_data` on the dropped stack, as `rftoolsutility`
-  0.2.1 and the parent's slice 2 do — is the fix; it is a slice of its own and was out of scope
-  here.
 
 ## 8. The ladder (evidence index)
 
@@ -354,35 +454,39 @@ Still open, and new:
 
 | step | command | result | log |
 |---|---|---|---|
-| red | `cargo test`, the five augment rules against `todo!()` | **17 passed, 5 failed** (`not yet implemented: slice 2`) | `sdk-test-red-slice2.log` |
-| tests | `cargo test` | **22 passed, 0 failed** | `sdk-test.log` |
-| fmt + lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | `FMT-CLEAN`, `CLIPPY-CLEAN` | `sdk-clippy-slice2.log` |
-| content | `python3 tools/assemble_content.py --check` | red before (`differs or missing:` ×3), then `CONTENT OK: 56 files` | — |
-| package | `rm -f Cargo.lock && cargo horizon-mod build` ×2 | `CMP-IDENTICAL`, sha256 `75ebd87a…c7c`, **83,745 B**, 63 entries, no `Cargo.lock` | `sdk-build-slice2.log` |
-| check | `cargo horizon-mod check industrialforegoingsouls.hmod` | `industrialforegoingsouls 0.2.1 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 83,745 B, exit 0 | `sdk-check-slice2.log` (prints the sha) |
-| fits (pin) | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-fits-slice2.log` (prints the sha) |
-| fits (other) | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-slice2.log` (prints the sha) |
-| package gate | `python3 ports/tools/verify-sdk-package.py industrialforegoingsouls` | **1/1** (22 tests) | — |
-| in-game | `tools/e2e-two-mod.sh run` | `PASS` + `EXIT:0` | `industrialforegoingsouls-e2e/e2e-launcher.log` |
-| control | the same script on `GAME=$CONTROL_GAME` | `FAIL` + `EXIT:1` | `…/e2e-launcher-control.log` |
-| selftest ×4 | `SELFTEST=1`, `augment`, `laser`, `grow` | `FAIL` + `EXIT:1` each | `…/e2e-launcher-selftest{,-augment,-laser,-grow}.log` |
-| log gate | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=10 ok=10 missing-exit=0 bad-exit=0` | — |
+| red (review) | `cargo test`, the four new rules against `todo!()` | **29 passed, 4 failed** (`not yet implemented: slice 0.2.2 review`) | `sdk-test-red-review.log` |
+| tests | `cargo test` | **33 passed, 0 failed** | `sdk-test.log` |
+| fmt + lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | `FMT-CLEAN`, `CLIPPY-CLEAN` | `sdk-clippy-review.log` |
+| content | `python3 tools/assemble_content.py --check` | `CONTENT OK: 56 files` | — |
+| dependency refusal | one-module `native-build` | `industrialforegoingsouls requires missing mod industrialforegoing (… reason + url)`, exit 1 | `sdk-dependency-refusal.log` |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` ×2, the SDK-generated lock removed from each archive | `CMP-IDENTICAL`, sha256 `7397e359…0e16`, **96,432 B**, 63 entries, no `Cargo.lock` | `sdk-build-review.log` |
+| check | `cargo horizon-mod check industrialforegoingsouls.hmod` | `industrialforegoingsouls 0.2.2 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 96,432 B, exit 0 | `sdk-check-review.log` (prints the sha) |
+| fits (pin) | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 | `sdk-check-review.log` (prints the sha) |
+| fits (other) | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-check-review.log` (prints the sha) |
+| package gate | `python3 ports/tools/verify-sdk-package.py industrialforegoingsouls` | **1/1** (33 tests) | — |
+| launcher build | `tools/e2e-two-mod.sh build` (stale tag + export removed) | `Compiling industrialforegoing (1 of 2)`, `Compiling industrialforegoingsouls (2 of 2)`, carries 0.2.8 + 0.2.2 | `industrialforegoingsouls/e2e-two-mod-build.log` |
+| in-game | `tools/e2e-two-mod.sh run` | `PASS` + `EXIT:0`, phases A–Q + M2 | `industrialforegoingsouls-e2e/e2e-launcher.log` |
+| control | the same script on `GAME=$CONTROL_GAME` | `FAIL: the game refused industrialforegoingsouls:soul_laser_base` + `EXIT:1` | `…/e2e-launcher-control.log` |
+| selftest ×6 | `SELFTEST=1`, `augment`, `laser`, `grow`, `carry`, `replace` | `FAIL` + `EXIT:1` each | `…/e2e-launcher-selftest{,-augment,-laser,-grow,-carry,-replace}.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py industrialforegoingsouls-e2e --strict` | `logs=15 ok=15 missing-exit=0 bad-exit=0` | — |
 
 ## 9. Files
 
 ```
 Cargo.toml, horizon-mod.toml, LICENSE, README.md, .gitignore
-industrialforegoingsouls.hmod     delivered package (83,745 B)
-SLICE-PLAN-0.2.1.md               this slice's plan (families, assertions, TDD order)
+industrialforegoingsouls.hmod     delivered package (96,432 B, sha256 7397e359…0e16)
+SLICE-PLAN-0.2.1.md               the first slice's plan (families, assertions, TDD order)
+SLICE-PLAN-0.2.2.md               the carrying slice's plan
+REVIEW-FIXES-0.2.2.md             the reviewer's four findings and how each is answered
 src/lib.rs                        the one impl Hooks + the three Parts
-src/runtime.rs                    the pure economy, 17 tests
+src/runtime.rs                    the pure economy and the network cache, 33 tests
 assets/industrialforegoingsouls/  blockstates, models, item definitions, block textures, lang
 data/industrialforegoingsouls/    block declarations, creative tab, loot, recipes, tags, advancements
 data/c/…, data/minecraft/tags/…   this port's declarations of the convention tags it needs
 tools/assemble_content.py         jar -> assets/data, re-spelled for 26.3 (`--check` proves it)
 tools/craft_recipe.py             the three recipes + the stand-in control, in a real table
 tools/parse_info.py               `/industrialforegoingsouls info` -> shell fields
-tools/e2e.sh                      the in-game scenario (A–N, D2–D3 the augment, M2 the parent laser)
+tools/e2e.sh                      the in-game scenario (A–Q, D2–D3 the augment, P the carried contents, Q the lens swap, M2 the parent laser)
 tools/parse_laser.py              the parent machine's `/industrialforegoing info` parser (its own, copied)
 tools/e2e-two-mod.sh              builds the two-mod game (this port + its parent) and runs it
 notes.md, FINDINGS.md, VALIDATION.md

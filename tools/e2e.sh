@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# In-game check for Industrial Foregoing: Souls 0.2.1 — the one soul economy, its efficiency
+# In-game check for Industrial Foregoing: Souls 0.2.2 — the one soul economy, its efficiency
 # augment, and the parent laser machinery's use of its ore recipe.
 #
 # The Soul Laser Base seats `industrialforegoing:blue_laser_lens` in its catalyst slot and, with a
@@ -31,8 +31,13 @@
 # SELFTEST=1 flips phase B's "no lens, no souls" and SELFTEST=grow flips phase G's control crop (the
 # unaccelerated wheat must have stayed at age 0); SELFTEST=augment asserts the plain bar's rate on a
 # machine with the augment seated, and SELFTEST=laser asserts the parent's base yielded no echo
-# shard. Each must FAIL against the 0.2.1 package, which is what makes the bearing leg evidence; a
+# shard. Each must FAIL against the 0.2.2 package, which is what makes the bearing leg evidence; a
 # run that fails never reaches PASS.
+#
+# SELFTEST=carry is slice 3's own leg: phase P asserts that a machine broken with its lens and its
+# efficiency addon comes back **empty** — souls 0, lens none — which must fail against a package
+# that carries them. SELFTEST=replace inverts phase Q: a second lens must void the first one, which
+# must fail against a package that hands it back.
 set -Eeuo pipefail
 export LC_ALL=C
 [ -z "${IF_DEBUG:-}" ] || set -x
@@ -246,6 +251,96 @@ base_slot() { # base_slot X Y Z N
     ctl container "$1" "$2" "$3" | jq -r --argjson n "$4" \
         '.slots[$n] | if . == null then "empty" else "\(.item) x\(.count)" end'
 }
+
+# --- a machine's contents on its own item (phase P) ------------------------------------------
+
+# Stand two blocks west of X Y Z and aim at its west face, so a `use-item` is a `use_item_on`.
+aim_block() { # aim_block X Y Z
+    ctl command "execute in minecraft:the_end run tp @s $(($1 - 2)).5 $2 $3.5" >/dev/null
+    ctl wait 6 >/dev/null
+    ctl look-at-block "$1" "$2" "$3" west >/dev/null 2>&1 || fail "cannot aim at $1,$2,$3"
+    ctl wait 6 >/dev/null
+}
+
+# A survival break with the pickaxe, then the drop collected. `block_drops` does not fire for a
+# creative break (nothing drops), so this is the only path that carries anything.
+break_and_collect() { # break_and_collect X Y Z ITEM
+    local x=$1 y=$2 z=$3 item=$4
+    ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 $y $z.5" >/dev/null
+    ctl wait 6 >/dev/null
+    ctl command "item replace entity @s hotbar.0 with minecraft:iron_pickaxe 1" >/dev/null
+    ctl select 1 >/dev/null
+    ctl wait 4 >/dev/null
+    if ! BROKEN=$(ctl break "$x" "$y" "$z" 2>&1); then
+        fail "breaking $item at $x,$y,$z failed: $BROKEN"
+    fi
+    ctl wait 10 >/dev/null
+    [ "$(block_name "$x" "$y" "$z")" = "minecraft:air" ] \
+        || fail "the block at $x,$y,$z survived the break"
+    # The drop is an item entity: `ctl collect` walks to it where the build has that verb, and
+    # standing on the broken block's own position picks it up as the fallback.
+    ctl collect 8 >/dev/null 2>&1 || true
+    ctl wait 10 >/dev/null
+    if ! ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$item\")] | length >= 1" >/dev/null 2>&1; then
+        ctl command "execute in minecraft:the_end run tp @s $x.5 $y $z.5" >/dev/null
+        ctl wait 20 >/dev/null
+    fi
+    ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$item\")] | length >= 1" >/dev/null \
+        || fail "the broken $item was not picked up: $(ctl inventory | jq -c '{hotbar,main}')"
+}
+
+# The `/data get entity @s Inventory` reply: an item's own components ride with it, in whichever
+# slot collected it (`SelectedItem` reads the hotbar only, and a collected drop can land in the
+# main inventory).
+carry_line() {
+    ctl command "data get entity @s Inventory" >/dev/null
+    ctl wait 6 >/dev/null
+    ctl messages 8 | jq -r '.chat[]' | grep -m1 'has the following entity data' || true
+}
+
+# `ctl place --item` places from the hotbar only, so a stack that landed in the main inventory is
+# moved into the last hotbar slot with the game's own `item` command (`from` copies, which is all a
+# placement needs). Never `/item replace` with a freshly given machine: that proves nothing.
+hold_carried() { # hold_carried ITEM
+    local item=$1 slot
+    if ctl inventory | jq -e "[.hotbar[] | select(.item == \"$item\")] | length >= 1" >/dev/null 2>&1; then
+        return 0
+    fi
+    slot=$(ctl inventory | jq -r --arg i "$item" '[.main[] | select(.item == $i)][0].slot // empty')
+    [ -n "$slot" ] || fail "the carried $item is in no inventory slot: $(ctl inventory | jq -c '{hotbar,main}')"
+    ctl command "item replace entity @s hotbar.8 with minecraft:air" >/dev/null
+    ctl wait 4 >/dev/null
+    ctl command "item replace entity @s hotbar.8 from entity @s container.$slot" >/dev/null
+    ctl wait 6 >/dev/null
+    ctl inventory | jq -e "[.hotbar[] | select(.item == \"$item\")] | length >= 1" >/dev/null \
+        || fail "the carried $item did not reach the hotbar: $(ctl inventory | jq -c '{hotbar,main}')"
+}
+
+# Place the carried stack at X Y Z, on the block below it (the player stands two blocks west).
+place_kept() { # place_kept X Y Z ITEM
+    local x=$1 y=$2 z=$3 item=$4 attempt reply=""
+    ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 $y $z.5" >/dev/null
+    ctl wait 6 >/dev/null
+    hold_carried "$item"
+    for attempt in 1 2 3; do
+        ctl select "$item" >/dev/null 2>&1 || true
+        ctl wait 3 >/dev/null
+        ctl look-at-block "$x" $((y - 1)) "$z" up >/dev/null 2>&1 || true
+        ctl wait 2 >/dev/null
+        if reply=$(ctl place "$x" "$y" "$z" --item "$item" 2>&1); then
+            ctl wait 6 >/dev/null
+            [ "$(block_name "$x" "$y" "$z")" = "$item" ] \
+                || fail "the carried $item did not place at $x,$y,$z (got '$(block_name "$x" "$y" "$z")')"
+            return 0
+        fi
+        echo "  place attempt $attempt refused: $(tr -d '\n' <<<"$reply" | cut -c1-200)" >&2
+        ctl command "execute in minecraft:the_end run kill @e[type=!player,x=$x,y=$y,z=$z,distance=..2]" \
+            >/dev/null 2>&1 || true
+        ctl wait 10 >/dev/null
+    done
+    fail "ctl place $item at $x,$y,$z was refused three times: $(ctl inventory | jq -c '{hotbar,main}')"
+}
+
 
 echo "== launch (The End arena, one package with content and code) =="
 launch
@@ -530,6 +625,10 @@ python3 "$PORT/tools/craft_recipe.py" "$SOCK" "$CTL" 219 101 10 \
     || fail "the carried shaped recipes did not craft"
 
 echo "== L: each block drops itself when broken in survival =="
+# Peaceful from here to the end of the breaking phases: an Enderman that wandered into the arena
+# killed the player mid-break on 2026-11-22, which is a harness accident, not a port failure.
+ctl command "difficulty peaceful" >/dev/null
+ctl command "execute in minecraft:the_end run kill @e[type=!player]" >/dev/null
 ctl command "gamemode survival @s" >/dev/null
 ctl command "clear @s" >/dev/null
 ctl command "item replace entity @s hotbar.0 with minecraft:iron_pickaxe 1" >/dev/null
@@ -555,6 +654,182 @@ for spec in "soul_laser_base $X0 101 0 2" "soul_network_pipe 191 102 -8 2" "soul
         || fail "a broken $local_id dropped nothing: $(echo "$BROKEN" | jq -c '.drops')"
 done
 echo "  the three blocks drop themselves"
+
+echo "== P: a broken machine carries its contents on its own item =="
+# The gap 0.2.1 recorded: a Soul Laser Base used to lose its seated lens and efficiency addon when
+# a player broke it. `block_drops` writes a fresh `minecraft:block_entity_data` payload on the drop
+# and the item's placement hook merges it back, clamped. An empty machine's item stays plain.
+RX=$((X0 - 4))
+EX=$((X0 - 4))
+PX=$((X0 - 1))
+ctl command "gamemode survival @s" >/dev/null
+ctl command "clear @s" >/dev/null
+ctl command "execute in minecraft:the_end run kill @e[type=!player]" >/dev/null
+ctl wait 20 >/dev/null
+
+ctl command "execute in minecraft:the_end run setblock $RX 101 9 industrialforegoingsouls:soul_laser_base" >/dev/null
+ctl wait 8 >/dev/null
+[ "$(block_name "$RX" 101 9)" = "industrialforegoingsouls:soul_laser_base" ] \
+    || fail "the carrying machine did not place at $RX,101,9"
+# The lens and the augment go in by click, as phases C and D2 seat them.
+ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
+ctl wait 6 >/dev/null
+ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the lens is not in the hotbar"
+aim_block "$RX" 101 9
+ctl use-item >/dev/null || fail "the right-click with the lens on the carrying machine failed"
+ctl wait 6 >/dev/null
+ctl command "give @s industrialforegoing:efficiency_addon_tier_2 1" >/dev/null
+ctl wait 6 >/dev/null
+ctl select industrialforegoing:efficiency_addon_tier_2 >/dev/null 2>&1 \
+    || fail "the efficiency addon is not in the hotbar"
+aim_block "$RX" 101 9
+ctl use-item >/dev/null || fail "the right-click with the efficiency addon failed"
+ctl wait 6 >/dev/null
+say "industrialforegoingsouls souls $RX 101 9 30"
+# One plain bar later the augment has rescaled the bar to 16; no warden is in range (they were
+# killed above), so the tank keeps the seeded 30.
+ctl wait 26 >/dev/null
+info "$RX" 101 9
+expect "the bar the augment rescales before the break" "$PROGRESS_MAX" 16
+expect "the tank before the break" "$SOULS" 30
+expect "the lens before the break" "$LENS" "industrialforegoing:blue_laser_lens"
+expect "the augment before the break" "$EFFICIENCY" "0.80"
+KEPT_SOULS=$SOULS
+KEPT_PROGRESS=$PROGRESS
+echo "  before the break: souls $SOULS, progress $PROGRESS/$PROGRESS_MAX, lens $LENS, efficiency $EFFICIENCY"
+# The machine's own contents must not spill as items: the lens and the augment travel on the drop.
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+break_and_collect "$RX" 101 9 industrialforegoingsouls:soul_laser_base
+CARRY=$(carry_line)
+[ -n "$CARRY" ] || fail "no /data get reply for the picked-up machine: $(ctl messages 8 | jq -c '.chat')"
+echo "  $CARRY" >&2
+eval "$(python3 "$PORT/tools/parse_carry.py" "$CARRY" industrialforegoingsouls:soul_laser_base \
+    "$KEPT_SOULS" 16 industrialforegoing:blue_laser_lens 0.8)" \
+    || fail "the broken machine's item does not carry its contents: $CARRY"
+[ "${ok:-0}" = 1 ] || fail "the carried payload did not parse: $CARRY"
+expect "the lens the break did not spill" "$(held industrialforegoing:blue_laser_lens)" 0
+expect "the addon the break did not spill" "$(held industrialforegoing:efficiency_addon_tier_2)" 0
+echo "  the drop carries souls $souls, progress $progress/$bar, lens $lens, efficiency $efficiency"
+# … and placing it back puts the machine together again.
+place_kept "$RX" 101 9 industrialforegoingsouls:soul_laser_base
+info "$RX" 101 9
+if [ "$SELFTEST" = carry ]; then
+    echo "(selftest: asserting the restored machine kept nothing)"
+    expect "selftest: the restored tank" "$SOULS" 0
+    expect "selftest: the restored lens" "$LENS" "none"
+fi
+expect "the restored tank" "$SOULS" "$KEPT_SOULS"
+expect "the restored bar" "$PROGRESS_MAX" 16
+expect "the restored lens" "$LENS" "industrialforegoing:blue_laser_lens"
+expect "the restored augment" "$EFFICIENCY" "0.80"
+[ "$PROGRESS" -ge 1 ] && [ "$PROGRESS" -le 16 ] \
+    || fail "the restored progress is $PROGRESS, outside the 16-tick bar (a plain machine reads 20)"
+echo "  placed back: souls $SOULS, progress $PROGRESS/16, lens $LENS, efficiency $EFFICIENCY"
+
+# The counterfactual: a machine holding nothing drops a plain item, and places as a fresh one.
+ctl command "execute in minecraft:the_end run setblock $EX 101 11 industrialforegoingsouls:soul_laser_base" >/dev/null
+ctl wait 8 >/dev/null
+info "$EX" 101 11
+expect "the empty machine's tank" "$SOULS" 0
+expect "the empty machine's lens" "$LENS" "none"
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+break_and_collect "$EX" 101 11 industrialforegoingsouls:soul_laser_base
+CARRY=$(carry_line)
+[ -n "$CARRY" ] || fail "no /data get reply for the picked-up empty machine"
+echo "  $CARRY" >&2
+eval "$(python3 "$PORT/tools/parse_carry.py" "$CARRY" none)" \
+    || fail "an empty machine's item carries a payload: $CARRY"
+[ "${ok:-0}" = 1 ] || fail "the empty drop did not parse: $CARRY"
+place_kept "$EX" 101 11 industrialforegoingsouls:soul_laser_base
+info "$EX" 101 11
+expect "the empty machine's tank after its break" "$SOULS" 0
+expect "the empty machine's lens after its break" "$LENS" "none"
+expect "the empty machine's bar after its break" "$PROGRESS_MAX" 20
+expect "the empty machine's augment" "$EFFICIENCY" "1.00"
+echo "  an empty machine's item: no payload, and it places as a fresh machine"
+
+# The same rule for the other two machines: a pipe keeps its own souls and a surge its bought ticks.
+ctl command "execute in minecraft:the_end run setblock $PX 101 9 industrialforegoingsouls:soul_network_pipe" >/dev/null
+ctl wait 10 >/dev/null
+say "industrialforegoingsouls souls $PX 101 9 3"
+ctl wait 6 >/dev/null
+info "$PX" 101 9
+expect "the pipe's souls before the break" "$NETWORK" 3
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+break_and_collect "$PX" 101 9 industrialforegoingsouls:soul_network_pipe
+CARRY=$(carry_line)
+echo "  $CARRY" >&2
+eval "$(python3 "$PORT/tools/parse_carry.py" "$CARRY" industrialforegoingsouls:soul_network_pipe 3)" \
+    || fail "the broken pipe's item does not carry its souls: $CARRY"
+[ "${ok:-0}" = 1 ] || fail "the pipe's payload did not parse: $CARRY"
+place_kept "$PX" 101 9 industrialforegoingsouls:soul_network_pipe
+info "$PX" 101 9
+expect "the pipe's souls after its break" "$NETWORK" 3
+echo "  a broken pipe's item carries its $souls souls back"
+
+ctl command "execute in minecraft:the_end run setblock $PX 101 12 industrialforegoingsouls:soul_surge[facing=north]" >/dev/null
+ctl wait 10 >/dev/null
+say "industrialforegoingsouls wait $PX 101 12 120"
+ctl wait 6 >/dev/null
+info "$PX" 101 12
+expect "the surge's bought ticks before the break" "$WAIT" 120
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+break_and_collect "$PX" 101 12 industrialforegoingsouls:soul_surge
+CARRY=$(carry_line)
+echo "  $CARRY" >&2
+eval "$(python3 "$PORT/tools/parse_carry.py" "$CARRY" industrialforegoingsouls:soul_surge - - - - 120)" \
+    || fail "the broken surge's item does not carry its ticks: $CARRY"
+[ "${ok:-0}" = 1 ] || fail "the surge's payload did not parse: $CARRY"
+# A pedestal of one of the mod's own surges: a surge is in both `cant_accelerate` tags, so the
+# restored one above it aims at a block that may not be accelerated and keeps every tick it carried
+# (`a_surge_facing_nothing_keeps_its_soul`).
+ctl command "execute in minecraft:the_end run setblock $PX 101 14 industrialforegoingsouls:soul_surge[facing=north]" >/dev/null
+ctl wait 6 >/dev/null
+place_kept "$PX" 102 14 industrialforegoingsouls:soul_surge
+info "$PX" 102 14
+expect "the restored surge's facing" "$FACING" up
+expect "the surge's ticks after its break" "$WAIT" 120
+echo "  a broken surge's item carries its $wait bought ticks back"
+
+echo "== Q: a second lens replaces the first, and the first comes back =="
+# Upstream's one catalyst slot swaps the old lens into the player's hand; the 0.2.1 port overtook
+# the saved value and ate the new lens, losing the old one with it. The click must leave exactly
+# one lens in the machine and exactly one back in the player's inventory.
+QX=$((X0 - 4))
+QZ=13
+ctl command "execute in minecraft:the_end run setblock $QX 101 $QZ industrialforegoingsouls:soul_laser_base" >/dev/null
+ctl wait 8 >/dev/null
+[ "$(block_name "$QX" 101 "$QZ")" = "industrialforegoingsouls:soul_laser_base" ] \
+    || fail "the lens-swap machine did not place at $QX,101,$QZ"
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
+ctl wait 6 >/dev/null
+ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the first lens is not in the hotbar"
+aim_block "$QX" 101 "$QZ"
+ctl use-item >/dev/null || fail "the first lens did not seat on the swap machine"
+ctl wait 6 >/dev/null
+info "$QX" 101 "$QZ"
+expect "the first lens seated" "$LENS" "industrialforegoing:blue_laser_lens"
+expect "the first lens taken from the hand" "$(held industrialforegoing:blue_laser_lens)" 0
+ctl command "give @s industrialforegoing:blue_laser_lens 1" >/dev/null
+ctl wait 6 >/dev/null
+ctl select industrialforegoing:blue_laser_lens >/dev/null 2>&1 || fail "the second lens is not in the hotbar"
+aim_block "$QX" 101 "$QZ"
+ctl use-item >/dev/null || fail "the second lens's click failed"
+ctl wait 6 >/dev/null
+info "$QX" 101 "$QZ"
+if [ "$SELFTEST" = replace ]; then
+    echo "(selftest: asserting the second lens voided the first)"
+    expect "selftest: the lens the swap returned" "$(held industrialforegoing:blue_laser_lens)" 0
+fi
+expect "the lens the swap returned" "$(held industrialforegoing:blue_laser_lens)" 1
+expect "the lens still seated after the swap" "$LENS" "industrialforegoing:blue_laser_lens"
+echo "  a second lens: the machine keeps one, the first is back in the inventory (held 1)"
 
 echo "== N: the mod's readout refuses a block that is not its own =="
 REFUSAL=$(ctl chat "/industrialforegoingsouls info 190 101 0" >/dev/null 2>&1; ctl wait 8 >/dev/null; ctl messages 8 | jq -r '.chat[]' | grep -m1 'not an industrialforegoingsouls block' || true)
@@ -612,4 +887,4 @@ fi
 expect "this package's ore in the base's output" "$ORY" "minecraft:echo_shard x1"
 echo "  one base bar for the drill's 1,000 FE yielded $ORY"
 
-echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens back freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand, and the seated addon comes back out on an empty hand; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE"
+echo "PASS: the three blocks register, place and read back and an unknown id is refused; the Soul Laser Base makes no souls in 60 ticks with a warden in range and no lens, and with the blue lens seated it turns every 20 ticks into 4 damage on the warden and 2 souls in a 1,350 tank, and taking the lens back freezes the tank; a seated efficiency addon of 0.80 rescales the bar to 16 after one operation and ten of them fit a 160-tick window where the plain bar fits eight, a speed addon is refused and stays in the hand, and the seated addon comes back out on an empty hand; the Soul Pipe pulls 4 souls a tick out of the machine into a network of 4 souls a pipe (4/4 with one, 8/8 with two); the Soul Surge on the wheat's north face spends one soul, burns 300 accelerated ticks, random-ticks the block it is mounted on until a wheat grows where random_tick_speed 0 means the control wheat cannot, and stops while powered; the three carried recipes craft from the parent's tags and this port's c:stones with the ingredients consumed and the grid empty, a grid of vanilla stand-ins crafts nothing, and each block drops itself when broken; a Soul Laser Base broken in survival with a blue lens and an efficiency addon inside drops an item whose minecraft:block_entity_data carries the tank, the bar, the lens and the augment, and placing it back restores souls 30, a 16-tick bar, lens industrialforegoing:blue_laser_lens and augments efficiency 0.80, while an empty machine's item carries no payload and places as a fresh 20-tick machine; a broken pipe's item carries its 3 souls and a broken surge's its 120 bought ticks back; a second blue lens swaps with the seated one, which comes back to the player's inventory instead of being voided; and the parent's ore laser base reads an 11-recipe table, resolves this package's echo-shard recipe only in the deep_dark this package's tag names, and produces one minecraft:echo_shard from one completed bar of the drill's 1,000 FE"

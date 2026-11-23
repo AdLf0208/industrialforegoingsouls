@@ -110,4 +110,5 @@ $ cat ports/industrialforegoing/data/industrialforegoing/tags/item/machine_frame
 
 `META-INF/neoforge.mods.toml` declares `license = "MIT"`; `audit_licences.py --mod
 industrialforegoingsouls --fetch` reads `declared MIT / effective MIT`. The jar also declares
-`industrialforegoing` as a `required` dependency, which is why this port refuses to load without it.
+`industrialforegoing` as a `required` dependency; the port now declares it in `horizon-mod.toml`
+(`>=0.2.7`), so a bundle without the parent is refused by name before it starts.

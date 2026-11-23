@@ -6,7 +6,8 @@
 # `catalyst.getStackInSlot(0).getItem().equals(ModuleCore.LASER_LENS[11].get())` does. A game
 # without the parent answers `mod industrialforegoingsouls requested unknown item
 # industrialforegoing:blue_laser_lens` at load and stops — the required-dependency refusal, since
-# `horizon-mod.toml` has no dependency field to declare it in.
+# `horizon-mod.toml` declares the dependency (`industrialforegoing >= 0.2.7`), so a one-module
+# bundle is refused by name before it starts; this wrapper is how the pair is built and run.
 #
 # The launcher builds "a folder of them" (`native-build <folder>`), so the two ports are copied into
 # one folder, built, and the resulting version is exported the way `launcher-game.sh` exports a

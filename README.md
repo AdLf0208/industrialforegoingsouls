@@ -18,9 +18,11 @@ The mod is one soul economy in three blocks:
 
 ## Install
 
-This mod **requires Industrial Foregoing** (its blue laser lens is the laser base's gate). Install
-both; a game without the parent refuses this package at load with
-`mod industrialforegoingsouls requested unknown item industrialforegoing:blue_laser_lens`.
+This mod **requires Industrial Foregoing** (its blue laser lens is the laser base's gate, and the
+carried ore recipe is the parent's type). `horizon-mod.toml` declares the dependency
+(`industrialforegoing >= 0.2.7`); a bundle without the parent is refused by name with
+`industrialforegoingsouls requires missing mod industrialforegoing` before it starts, instead of
+failing later at registration.
 
 Horizon mods are single `.hmod` files (code and content together), built by the Horizon launcher
 against the pinned game build: `industrialforegoingsouls.hmod` is the package.
@@ -41,8 +43,9 @@ from the deep dark — so the parent's ore laser base can mine it.
 - The surge's machine-accelerating and entity-accelerating branches (no helper ticks another block
   entity, or an entity).
 - The Sculk Soul Tank screen addon (the parent GUI it draws on is not ported).
-- A screen for the two augment slots: the click is the only way in or out, and a broken machine does
-  not carry its augments or its lens on its item.
+- A screen for the two augment slots: the click is the only way in or out. A broken machine does
+  carry its contents on its item (souls, the bar, the lens, the addon), and placing it back restores
+  them; a second lens swaps with the seated one, which comes back to the player.
 - A config file: the numbers are constants.
 - Waterlogging, and the surge's `enabled`/connection block states (the redstone rule is read in the
   tick instead).
@@ -53,7 +56,7 @@ from the deep dark — so the parent's ore laser base can mine it.
 ## Building and testing
 
 ```
-cargo test                                                  # the pure runtime, 22 tests
+cargo test                                                  # the pure runtime, 33 tests
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 rm -f Cargo.lock && cargo horizon-mod build                 # -> industrialforegoingsouls.hmod
 cargo horizon-mod check industrialforegoingsouls.hmod

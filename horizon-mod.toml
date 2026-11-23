@@ -1,6 +1,6 @@
 id = "industrialforegoingsouls"
 name = "Industrial Foregoing: Souls"
-version = "0.2.1"
+version = "0.2.2"
 description = """A port of Industrial Foregoing: Souls for Horizon: the three blocks that are one soul
 economy. The Soul Laser Base seats an `industrialforegoing:blue_laser_lens` in its catalyst slot and,
 with a warden inside the box above it, hurts it for 4 every 20 ticks and stores 2 souls of the damage
@@ -11,9 +11,11 @@ block it is mounted on four times at a 3% chance a tick, and stops while it is p
 `floor(20 x efficiency)` after an operation, exactly as Titanium's augment inventory does; a speed
 addon is refused. The package also carries the mod's one `industrialforegoing:laser_drill_ore`
 recipe (an echo shard, from the `industrialforegoingsouls:deep_dark` biome tag it declares), so the
-parent's ore laser base can mine it. The rest of the mod (the Sculk Soul Tank screen addon, the
-entity and block-entity acceleration branches, the comparator output) is not ported; notes.md says
-why."""
+parent's ore laser base can mine it. A broken machine's own item carries what the machine held — a
+base's tank, bar, seated lens and augment, a pipe's souls, a surge's bought ticks — and placing it
+puts them back, clamped; an empty machine's item stays plain. The rest of the mod (the Sculk Soul
+Tank screen addon, the entity and block-entity acceleration branches, the comparator output) is not
+ported; notes.md says why."""
 authors = ["Buuz135", "AdLf0208"]
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins, beside
 # the content this one also carries (assets/industrialforegoingsouls, data/industrialforegoingsouls).
@@ -22,6 +24,14 @@ side = "both"
 # The one shared value every manifest carries ("May add blocks, items, mob effects and entity types"):
 # this mod adds three blocks and three block entity types.
 capabilities = ["registries"]
+
+# The parent this port cannot run without: the Soul Laser Base seats the parent's
+# `industrialforegoing:blue_laser_lens` (resolved at registration) and the carried
+# `industrialforegoing:laser_drill_ore` recipe is the parent's recipe type, which the parent port
+# registers from 0.2.7. A game without it refuses this package by name instead of starting and
+# failing later at registration.
+[dependencies]
+industrialforegoing = { version = ">=0.2.7", reason = "The Soul Laser Base seats industrialforegoing:blue_laser_lens and the carried laser_drill_ore/echo_shard recipe is the parent's type, registered from 0.2.7.", url = "https://github.com/AdLf0208/industrialforegoing" }
 
 [native]
 game = "26.3"

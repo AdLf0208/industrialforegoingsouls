@@ -123,6 +123,169 @@ pub fn lens_fits(item: &str) -> bool {
     item == LENS
 }
 
+/// The most pipes one network walk holds. A walk stops at this budget, so a corrupted or
+/// deliberately huge arrangement cannot make one tick unbounded; the tail beyond it joins the
+/// network again once the component shrinks.
+pub const MAX_NETWORK_PIPES: usize = 4096;
+
+/// The slot a replaced catalyst lens goes back into: the clicking hand's own slot when it holds a
+/// single item (it empties), otherwise the first empty hotbar or main-inventory slot, then the off
+/// hand. `None` when the inventory is full, so the click is refused instead of voiding the lens.
+/// `occupied` is [`mod_api::PlayerRef::inventory_slots`]'s numbers, and `hand_count` the clicking
+/// stack's count before one is taken.
+#[must_use]
+pub fn replacement_slot(occupied: &[u32], hand_slot: u32, hand_count: u32) -> Option<u32> {
+    if hand_count <= 1 {
+        return Some(hand_slot);
+    }
+    // `Inventory`'s numbers: 0..=8 the hotbar, 9..=35 the main inventory, 40 the off hand.
+    (0..=35)
+        .chain(std::iter::once(40))
+        .find(|slot| *slot != hand_slot && !occupied.contains(slot))
+}
+
+/// The connected pipe positions grown from `seeds`, each cell probed once, cut at `limit` pipes.
+/// Set-based: a neighbour is looked up in the visited set, never in a position list.
+#[must_use]
+pub fn grow_component(
+    seeds: impl IntoIterator<Item = [i32; 3]>,
+    limit: usize,
+    is_pipe: &mut dyn FnMut([i32; 3]) -> bool,
+) -> Vec<[i32; 3]> {
+    /// The six sides, in `Direction::ALL` order.
+    const SIDES: [[i32; 3]; 6] = [
+        [0, -1, 0],
+        [0, 1, 0],
+        [0, 0, -1],
+        [0, 0, 1],
+        [-1, 0, 0],
+        [1, 0, 0],
+    ];
+    let mut visited: std::collections::HashSet<[i32; 3]> = std::collections::HashSet::new();
+    let mut positions: Vec<[i32; 3]> = Vec::new();
+    let mut queue: std::collections::VecDeque<[i32; 3]> = std::collections::VecDeque::new();
+    for seed in seeds {
+        if visited.insert(seed) && is_pipe(seed) && positions.len() < limit {
+            positions.push(seed);
+            queue.push_back(seed);
+        }
+    }
+    'walk: while let Some(pos) = queue.pop_front() {
+        for side in SIDES {
+            if positions.len() >= limit {
+                break 'walk;
+            }
+            let next = [pos[0] + side[0], pos[1] + side[1], pos[2] + side[2]];
+            if !visited.insert(next) {
+                continue;
+            }
+            if is_pipe(next) {
+                positions.push(next);
+                queue.push_back(next);
+            }
+        }
+    }
+    positions
+}
+
+/// One walked network: the connected pipe positions, in walk order, and what each held.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Walked {
+    positions: Vec<[i32; 3]>,
+    network: Network,
+}
+
+impl Walked {
+    /// A component from its positions and the souls at each (clamped to a pipe).
+    #[must_use]
+    pub fn new(positions: Vec<[i32; 3]>, souls: impl IntoIterator<Item = u32>) -> Self {
+        Self {
+            positions,
+            network: Network::new(souls),
+        }
+    }
+
+    /// The positions, in walk order.
+    #[must_use]
+    pub fn positions(&self) -> &[[i32; 3]] {
+        &self.positions
+    }
+
+    /// What each pipe holds, in walk order.
+    #[must_use]
+    pub fn network(&self) -> &Network {
+        &self.network
+    }
+
+    /// The network, for the transfer's write-back.
+    pub fn network_mut(&mut self) -> &mut Network {
+        &mut self.network
+    }
+
+    /// Set the souls of the pipe at `pos` (the pipe whose own tick is asking cannot be read).
+    pub fn set_souls(&mut self, pos: [i32; 3], souls: u32) {
+        if let Some(index) = self.positions.iter().position(|position| *position == pos) {
+            self.network.set(index, souls);
+        }
+    }
+}
+
+/// The per-tick memo of walked components, so the second pipe of a component does not walk it
+/// again. The key is the level and the level's game time: a new tick drops everything.
+#[derive(Debug, Default)]
+pub struct NetworkCache {
+    key: Option<u64>,
+    components: Vec<Walked>,
+    by_position: std::collections::HashMap<[i32; 3], (usize, usize)>,
+}
+
+impl NetworkCache {
+    /// An empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Start a walk at `key`, dropping every component cached for another level or tick.
+    pub fn begin(&mut self, key: u64) {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.components.clear();
+            self.by_position.clear();
+        }
+    }
+
+    /// The component holding `pos`, when this tick already walked it.
+    #[must_use]
+    pub fn component(&self, pos: [i32; 3]) -> Option<&Walked> {
+        self.by_position
+            .get(&pos)
+            .map(|(component, _)| &self.components[*component])
+    }
+
+    /// The component holding `pos`, for the tick's transfer.
+    pub fn component_mut(&mut self, pos: [i32; 3]) -> Option<&mut Walked> {
+        let component = self.by_position.get(&pos)?.0;
+        self.components.get_mut(component)
+    }
+
+    /// Remember a walked component, mapping every one of its positions to it.
+    pub fn insert(&mut self, walked: Walked) {
+        let component = self.components.len();
+        for (index, position) in walked.positions.iter().enumerate() {
+            self.by_position.insert(*position, (component, index));
+        }
+        self.components.push(walked);
+    }
+
+    /// Update one pipe's souls in the cached component that holds it.
+    pub fn set_souls(&mut self, pos: [i32; 3], souls: u32) {
+        if let Some((component, index)) = self.by_position.get(&pos).copied() {
+            self.components[component].network.set(index, souls);
+        }
+    }
+}
+
 /// A soul network: one entry per connected pipe, in the walk's order, each holding up to
 /// [`SOUL_PER_PIPE`]. Upstream keeps the total on Titanium's network object and caps it at
 /// `elements * SOUL_PER_PIPE`; storing it per pipe gives the same capacity and the same totals
@@ -177,6 +340,13 @@ impl Network {
             left -= put;
         }
         amount - left
+    }
+
+    /// Set one pipe's souls (clamped), for the pipe whose own tick supplies its unreadable value.
+    pub fn set(&mut self, index: usize, souls: u32) {
+        if let Some(slot) = self.pipes.get_mut(index) {
+            *slot = souls.min(SOUL_PER_PIPE);
+        }
     }
 
     /// Take up to `amount` souls out of the network, emptying pipes in walk order; returns what
@@ -623,5 +793,118 @@ mod tests {
     fn a_negative_saved_counter_is_an_empty_one() {
         assert_eq!(Surge::from_saved(-20).ticking_time, 0);
         assert_eq!(Surge::from_saved(7).ticking_time, 7);
+    }
+
+    // -----------------------------------------------------------------------
+    // The review fixes: a swapped lens, and a network walked once a tick
+    // -----------------------------------------------------------------------
+
+    /// A second lens is a swap, not a void: the old one goes into the hand that empties, or the
+    /// first free hotbar/main/off-hand slot; a full inventory refuses the click.
+    #[test]
+    fn a_replaced_lens_goes_back_into_the_hand_or_the_first_free_slot() {
+        assert_eq!(
+            replacement_slot(&[0, 1, 2], 0, 1),
+            Some(0),
+            "a single held lens leaves its slot empty for the old one"
+        );
+        assert_eq!(
+            replacement_slot(&[0, 1, 2], 0, 2),
+            Some(3),
+            "a spare in the hand keeps it, so the old lens takes the first free slot"
+        );
+        assert_eq!(
+            replacement_slot(&[0, 1, 40], 0, 3),
+            Some(2),
+            "the off hand is a destination only after the main inventory"
+        );
+        let full: Vec<u32> = (0..=35).chain([40]).collect();
+        assert_eq!(
+            replacement_slot(&full, 0, 2),
+            None,
+            "a full inventory refuses the click rather than voiding the old lens"
+        );
+    }
+
+    /// A 200-pipe line is walked once: each position appears once, and the level is asked once per
+    /// neighbour, not once per pipe times the line.
+    #[test]
+    fn a_two_hundred_pipe_line_is_walked_once_a_tick() {
+        let mut probes = 0;
+        let positions = grow_component([[0, 0, 0]], MAX_NETWORK_PIPES, &mut |pos| {
+            probes += 1;
+            pos[1] == 0 && pos[2] == 0 && (0..200).contains(&pos[0])
+        });
+        assert_eq!(
+            positions.len(),
+            200,
+            "every pipe of the line is in the walk"
+        );
+        assert_eq!(
+            positions.iter().filter(|pos| **pos == [42, 0, 0]).count(),
+            1,
+            "no pipe is visited twice"
+        );
+        assert!(
+            probes <= 6 * 200,
+            "one walk probes each pipe's six sides once: {probes} probes"
+        );
+
+        // The rest of the tick reuses the walk: the other 199 pipes ask the level nothing.
+        let first = probes;
+        let mut cache = NetworkCache::new();
+        cache.begin(9);
+        cache.insert(Walked::new(positions, std::iter::repeat_n(0, 200)));
+        for x in 0..200 {
+            assert!(
+                cache.component([x, 0, 0]).is_some(),
+                "pipe {x} is part of the cached component"
+            );
+        }
+        assert_eq!(
+            probes, first,
+            "a cached component is not walked again this tick"
+        );
+        assert!(
+            cache.component([200, 0, 0]).is_none(),
+            "a position outside the component is not answered"
+        );
+        cache.begin(10);
+        assert!(
+            cache.component([0, 0, 0]).is_none(),
+            "the next tick drops the walk"
+        );
+    }
+
+    /// The work budget: a component larger than [`MAX_NETWORK_PIPES`] stops at the bound.
+    #[test]
+    fn a_network_walk_stops_at_the_budget() {
+        let mut probes = 0;
+        let positions = grow_component([[0, 0, 0]], 100, &mut |pos| {
+            probes += 1;
+            pos[1] == 0 && pos[2] == 0 && (0..5_000).contains(&pos[0])
+        });
+        assert_eq!(positions.len(), 100, "the walk is cut at the budget");
+        assert!(
+            probes <= 6 * 100,
+            "the cut also bounds the probes: {probes}"
+        );
+        assert_eq!(positions[0], [0, 0, 0]);
+    }
+
+    /// The cached component keeps this tick's transfer, including the ticking pipe's own value.
+    #[test]
+    fn a_cached_component_keeps_the_ticks_transfer() {
+        let mut cache = NetworkCache::new();
+        cache.begin(3);
+        cache.insert(Walked::new(vec![[0, 0, 0], [1, 0, 0]], [1, 2]));
+        cache.set_souls([0, 0, 0], 4);
+        let walked = cache.component([1, 0, 0]).expect("the line is cached");
+        assert_eq!(
+            walked.network().pipes(),
+            &[4, 2],
+            "the write-back is visible"
+        );
+        assert_eq!(walked.network().total(), 6);
     }
 }
